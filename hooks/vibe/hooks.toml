@@ -1,0 +1,26 @@
+# Drop into ~/.vibe/hooks.toml  (or <project>/.vibe/hooks.toml for project scope)
+# Requires: enable_experimental_hooks = true  in ~/.vibe/config.toml
+# Vibe v2.15.0+ (before_tool / after_tool / post_agent_turn)
+#
+# NOTE: Vibe has no session start/stop hooks.  Session detection is handled
+# by the VibeWatcher in the broker (watches ~/.vibe/logs/session/ for new dirs).
+
+[[hooks]]
+name    = "ns-before-tool"
+type    = "before_tool"
+match   = "*"
+command = "led-report vibe before_tool"
+timeout = 5.0
+
+[[hooks]]
+name    = "ns-after-tool"
+type    = "after_tool"
+match   = "*"
+command = "led-report vibe after_tool"
+timeout = 5.0
+
+[[hooks]]
+name    = "ns-post-turn"
+type    = "post_agent_turn"
+command = "led-report vibe post_agent_turn"
+timeout = 5.0

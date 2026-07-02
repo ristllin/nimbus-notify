@@ -1,0 +1,6 @@
+{
+  "name": "nsnotify",
+  "version": "0.1.0",
+  "description": "Nuage Solide Notify — LED ring status indicator for concurrent AI coding-agent sessions (Claude Code, Codex, Mistral Vibe).",
+  "author": { "name": "Roy Darnell" }
+}
