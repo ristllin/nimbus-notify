@@ -15,11 +15,13 @@ import json
 import logging
 import os
 import signal
+import threading
 from pathlib import Path
 
 from notify.broker.frame import FrameSegment, encode_frame
 from notify.broker.segments import SegmentAllocator
 from notify.broker.session import SESSION_TTL_S, SessionRecord, verb_to_state
+from notify.harness.vibe import VibeWatcher
 from notify.state import State
 from notify.transport import Transport
 from notify.transport.serial_tx import SerialTransport, _find_esp32_port
@@ -36,13 +38,22 @@ class Broker:
         self._transport = transport
         self._allocator = SegmentAllocator()
         self._seq       = 0
+        # handle_event is called from TWO threads — the asyncio socket handler
+        # (led-report events) and the VibeWatcher daemon thread (session
+        # start/end + HITL inference).  Serialize so the allocator/seq/frame
+        # push can't interleave.
+        self._lock = threading.Lock()
+        # Wired by _run() once the watcher exists; the broker feeds it the
+        # before_tool/after_tool timing for its stalled-HITL heuristic (Vibe
+        # exposes no approval hook — see notify/harness/vibe.py).
+        self.vibe_watcher: VibeWatcher | None = None
 
     # ------------------------------------------------------------------
     # Event ingestion
     # ------------------------------------------------------------------
 
     def handle_event(self, msg: dict) -> None:
-        """Process one inbound event dict from led-report."""
+        """Process one inbound event dict from led-report (or the watcher)."""
         session_id = msg.get("session_id", "")
         harness    = msg.get("harness", "unknown")
         cwd        = msg.get("cwd", "")
@@ -52,19 +63,28 @@ class Broker:
         if verb == "notify" and "notification_type" in msg:
             verb = f"notify:{msg['notification_type']}"
 
+        # Feed the Vibe HITL tracker: a before_tool with no following after_tool
+        # within the timeout means the tool is blocked on approval.
+        if harness == "vibe" and self.vibe_watcher is not None:
+            if verb == "before_tool":
+                self.vibe_watcher.record_before_tool(session_id)
+            elif verb.startswith("after_tool"):
+                self.vibe_watcher.record_after_tool(session_id)
+
         state = verb_to_state(verb)
 
-        if state == State.Offline:
-            self._allocator.free(session_id)
-        else:
-            rec = SessionRecord(session_id=session_id, harness=harness,
-                                cwd=cwd, state=state)
-            if session_id not in self._allocator._index:
-                self._allocator.register(rec)
+        with self._lock:
+            if state == State.Offline:
+                self._allocator.free(session_id)
             else:
-                self._allocator.update(rec)
+                rec = SessionRecord(session_id=session_id, harness=harness,
+                                    cwd=cwd, state=state)
+                if session_id not in self._allocator._index:
+                    self._allocator.register(rec)
+                else:
+                    self._allocator.update(rec)
 
-        self._push_frame()
+            self._push_frame()
 
     # ------------------------------------------------------------------
     # Frame push
@@ -107,10 +127,11 @@ class Broker:
     async def _ttl_loop(self) -> None:
         while True:
             await asyncio.sleep(TTL_CHECK_S)
-            evicted = self._allocator.evict_stale()
-            if evicted:
-                log.info("evicted stale sessions: %s", evicted)
-                self._push_frame()
+            with self._lock:
+                evicted = self._allocator.evict_stale()
+                if evicted:
+                    log.info("evicted stale sessions: %s", evicted)
+                    self._push_frame()
 
 
 # ------------------------------------------------------------------
@@ -173,6 +194,14 @@ async def _run(port: str | None = None,
                                 ble_address=ble_address, ble_name=ble_name)
     broker    = Broker(transport)
 
+    # Vibe has no session start/stop hook: a background watcher on
+    # ~/.vibe/logs/session/ supplies start/end + HITL inference, firing events
+    # straight into broker.handle_event.  No-op (start() returns early) when the
+    # vibe session dir is absent, so Claude/serial-only setups are unaffected.
+    vibe_watcher = VibeWatcher(broker.handle_event)
+    broker.vibe_watcher = vibe_watcher
+    vibe_watcher.start()
+
     SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
     if SOCKET_PATH.exists():
         SOCKET_PATH.unlink()
@@ -196,6 +225,7 @@ async def _run(port: str | None = None,
         await stop
 
     ttl_task.cancel()
+    vibe_watcher.stop()
     transport.close()
     if SOCKET_PATH.exists():
         SOCKET_PATH.unlink()

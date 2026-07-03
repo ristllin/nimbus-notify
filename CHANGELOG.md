@@ -6,6 +6,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows the convention described in
 [CONTRIBUTING.md](CONTRIBUTING.md#versioning) (semver-for-0.x pre-1.0).
 
+## [0.3.0] — 2026-07-03
+
+### Fixed
+
+- **Vibe sessions are now detected.** The broker never started the
+  `VibeWatcher`, so Vibe sessions (which have no start/stop hook — only
+  `before_tool`/`after_tool`/`post_agent_turn`) were invisible: they never
+  appeared on the ring and never cleared. The broker now starts the watcher on
+  `~/.vibe/logs/session/` and routes `before_tool`/`after_tool` timing into its
+  HITL-inference tracker. Verified end-to-end: a real `vibe -p` session now
+  shows `start → running (tool) → done` on the device.
+- `VibeWatcher.start()` no longer bails permanently when
+  `~/.vibe/logs/session/` doesn't exist yet — on a fresh Vibe install that
+  directory is created only on the first session, so the watcher now starts as
+  long as `~/.vibe/` is present and picks up the session dir when it appears.
+
+### Changed
+
+- `Broker.handle_event` is now serialized with a lock: it is called from both
+  the asyncio socket handler (led-report events) and the VibeWatcher daemon
+  thread, so the segment allocator / sequence counter / frame push can no
+  longer interleave.
+
 ## [0.2.0] — 2026-07-03
 
 ### Added

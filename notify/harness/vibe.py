@@ -37,7 +37,8 @@ from notify.harness.base import HarnessEvent
 log = logging.getLogger(__name__)
 
 HITL_TIMEOUT_S = 30.0  # seconds between before_tool and after_tool before inferring HITL
-VIBE_SESSIONS  = Path.home() / ".vibe" / "logs" / "session"
+VIBE_HOME      = Path.home() / ".vibe"
+VIBE_SESSIONS  = VIBE_HOME / "logs" / "session"
 
 
 def parse_stdin() -> dict[str, Any]:
@@ -92,8 +93,12 @@ class VibeWatcher:
         self._pending_tool: dict[str, float] = {}
 
     def start(self) -> None:
-        if not VIBE_SESSIONS.exists():
-            log.debug("vibe session dir not found: %s", VIBE_SESSIONS)
+        # Only skip when Vibe isn't installed at all.  When Vibe IS present but
+        # hasn't created its session dir yet (fresh install, no session run),
+        # start anyway — _scan_sessions tolerates the dir appearing later, so
+        # the very first Vibe session is still detected.
+        if not VIBE_HOME.exists():
+            log.debug("vibe not installed (%s absent) — watcher idle", VIBE_HOME)
             return
         self._thread = threading.Thread(target=self._run, daemon=True, name="vibe-watcher")
         self._thread.start()
