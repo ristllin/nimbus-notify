@@ -11,8 +11,9 @@ from notify.transport.serial_tx import SerialTransport
 class _DummyBle:
     """Stands in for BleTransport so no worker thread / Bluetooth starts."""
 
-    def __init__(self, device_address=None):
+    def __init__(self, device_address=None, device_name=None):
         self.device_address = device_address
+        self.device_name = device_name
 
     def send(self, frame: bytes) -> bool:
         return False
@@ -71,6 +72,13 @@ def test_explicit_ble_passes_address(dummy_ble):
     t = server._make_transport("ble", ble_address="cb-uuid-1234")
     assert isinstance(t, _DummyBle)
     assert t.device_address == "cb-uuid-1234"
+
+
+def test_explicit_ble_passes_name(dummy_ble):
+    t = server._make_transport("ble", ble_name="Nimbus-BT")
+    assert isinstance(t, _DummyBle)
+    assert t.device_name == "Nimbus-BT"       # exact-name discriminator plumbed
+    assert t.device_address is None
 
 
 def test_auto_prefers_serial_when_port_present(monkeypatch, dummy_ble):

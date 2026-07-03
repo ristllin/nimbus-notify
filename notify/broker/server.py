@@ -119,7 +119,8 @@ class Broker:
 
 def _make_transport(kind: str,
                     port: str | None = None,
-                    ble_address: str | None = None) -> Transport:
+                    ble_address: str | None = None,
+                    ble_name: str | None = None) -> Transport:
     """Resolve --transport {serial,ble,auto} into a concrete transport.
 
     auto: serial iff an ESP32-looking port is present RIGHT NOW, else BLE.
@@ -135,8 +136,10 @@ def _make_transport(kind: str,
     if kind == "ble":
         # Lazy import so serial-only setups never touch bleak.
         from notify.transport.ble_tx import BleTransport
-        log.info("transport: ble (%s)", ble_address or "scan by service UUID")
-        return BleTransport(device_address=ble_address)
+        target = ble_address or (f"name={ble_name}" if ble_name
+                                 else "scan by service UUID")
+        log.info("transport: ble (%s)", target)
+        return BleTransport(device_address=ble_address, device_name=ble_name)
     raise ValueError(f"unknown transport kind: {kind!r}")
 
 
@@ -161,12 +164,13 @@ async def _handle_client(broker: Broker,
 
 async def _run(port: str | None = None,
                transport_kind: str = "serial",
-               ble_address: str | None = None) -> None:
+               ble_address: str | None = None,
+               ble_name: str | None = None) -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     transport = _make_transport(transport_kind, port=port,
-                                ble_address=ble_address)
+                                ble_address=ble_address, ble_name=ble_name)
     broker    = Broker(transport)
 
     SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -210,6 +214,13 @@ def _build_parser():
     p.add_argument("--ble-address",
                    help="BLE device address (CoreBluetooth UUID on macOS, "
                         "MAC on Linux; default: scan by service UUID)")
+    p.add_argument("--ble-name",
+                   help="Connect ONLY to a peripheral advertising this exact "
+                        "name (still gated on the nsn service UUID). Use when "
+                        "several boards run this firmware on one desk, e.g. a "
+                        "bench board named 'Nimbus-BT' vs a production 'Nimbus'. "
+                        "On macOS this is the reliable discriminator (the MAC is "
+                        "hidden).")
     return p
 
 
@@ -217,7 +228,8 @@ def main() -> None:
     args = _build_parser().parse_args()
     asyncio.run(_run(port=args.port,
                      transport_kind=args.transport,
-                     ble_address=args.ble_address))
+                     ble_address=args.ble_address,
+                     ble_name=args.ble_name))
 
 
 if __name__ == "__main__":

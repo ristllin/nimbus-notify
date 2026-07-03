@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows the convention described in
 [CONTRIBUTING.md](CONTRIBUTING.md#versioning) (semver-for-0.x pre-1.0).
 
+## [0.2.0] — 2026-07-03
+
+### Added
+
+- `nsnotify-broker --ble-name <NAME>`: connect only to a BLE peripheral
+  advertising this exact name (still gated on the nsn service UUID). Lets
+  several boards running this firmware on one desk stay unambiguous — e.g. a
+  bench board named `Nimbus-BT` vs a production `Nimbus`. On macOS this is the
+  reliable discriminator since CoreBluetooth hides the MAC address.
+
 ## [0.1.0] — 2026-07-03
 
 Initial public release, split out of a private monorepo into its own

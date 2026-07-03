@@ -72,9 +72,16 @@ CLOSE_TIMEOUT_S   = 5.0
 class BleTransport:
     """BLE GATT central transport (same public shape as SerialTransport)."""
 
-    def __init__(self, device_address: str | None = None) -> None:
+    def __init__(self, device_address: str | None = None,
+                 device_name: str | None = None) -> None:
         # macOS: CoreBluetooth UUID, NOT a MAC.  None → scan by service UUID.
         self._address = device_address
+        # Exact advertised-name filter. When set, ONLY a peripheral whose name
+        # matches (and which exposes the service) is connected — so several
+        # boards running this firmware on one desk (e.g. a bench board named
+        # "Nimbus-BT" alongside a production "Nimbus") stay unambiguous. macOS
+        # hides the MAC, so name is the only stable discriminator there.
+        self._name = device_name
         self._current: bytes | None = None   # latest-wins mailbox
         self._lock        = threading.Lock()
         self._connected   = threading.Event()
@@ -163,10 +170,16 @@ class BleTransport:
             backoff = min(backoff * 2.0, BACKOFF_CAP_S)
 
     async def _find_device(self):
-        """Scan by advertised service UUID; fall back to the local name."""
+        """Scan for the target peripheral. With an explicit name filter, require
+        an EXACT name match (still gated on the service UUID); otherwise match by
+        service UUID or the default local name."""
+        want = self._name
         def _match(device, adv) -> bool:
             uuids = [u.lower() for u in (adv.service_uuids or [])]
-            return SERVICE_UUID in uuids or (device.name or "") == DEVICE_NAME
+            has_svc = SERVICE_UUID in uuids
+            if want is not None:
+                return has_svc and (device.name or "") == want
+            return has_svc or (device.name or "") == DEVICE_NAME
         return await BleakScanner.find_device_by_filter(
             _match, timeout=SCAN_TIMEOUT_S)
 
