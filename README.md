@@ -147,6 +147,27 @@ nsnotify-broker --transport auto     # serial if a device is plugged in at
 Transport selection happens once at startup — there's no live failover
 between serial and BLE mid-session in this version.
 
+### Pairing the BLE link (one time)
+
+Recent Nimbus firmware **secures the BLE link** (bonded + MITM passkey), so a
+device won't accept frames from an unpaired computer — this stops anyone in
+radio range from painting your ring. The first time the broker tries to send a
+frame, your OS raises its native Bluetooth pairing sheet and the broker logs:
+
+```
+Nimbus rejected the frame — the link isn't paired yet. Pair it once: open
+System Settings > Bluetooth, click Nimbus, and type the 6-digit code shown on
+the device screen. After that this works automatically.
+```
+
+Pair once: **System Settings → Bluetooth → Nimbus**, and type the 6-digit
+passkey the device shows on its e-ink screen (bench builds also print it on the
+serial console as `[ble] passkey NNNNNN`). The bond persists on the device (in
+flash) and on your Mac, so every session after that is transparent — macOS
+encrypts the link automatically and you never see the sheet again. To unpair,
+remove Nimbus in System Settings **and** use the device's *Connectivity → Forget
+paired devices* menu (or its `FORGETBONDS` console command).
+
 ## Running persistently
 
 For day-to-day use you'll want the broker running in the background
