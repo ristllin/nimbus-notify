@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nsnotify"
-version = "0.3.0"
+version = "0.4.0"
 description = "Host broker that watches your AI coding sessions (Claude Code, Codex, Mistral Vibe) and pushes live status to a physical LED ring / e-ink device over a documented wire protocol"
 readme = "README.md"
 license = "MIT"

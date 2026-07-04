@@ -6,6 +6,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows the convention described in
 [CONTRIBUTING.md](CONTRIBUTING.md#versioning) (semver-for-0.x pre-1.0).
 
+## [0.4.0] — 2026-07-04
+
+### Changed
+
+- **The BLE link now requires a one-time pairing.** The Nimbus firmware secured
+  its GATT server (bonded + MITM passkey), so the broker writes FRAME **with
+  response** (`response=True`): an unbonded write returns an insufficient-
+  encryption error, which is what makes macOS raise its native pairing sheet.
+  Pair once — System Settings > Bluetooth, enter the 6-digit code shown on the
+  device screen (also on its serial console) — and every session after is
+  transparent. First-run gets a clear "pair first" hint on the broker console.
+
+### Fixed
+
+- After the unbonded write is rejected, the broker now **re-drives the pending
+  frame** on a short timer until the link encrypts (macOS upgrades the *same*
+  connection in place with no reconnect, so nothing else would re-send it) — the
+  ring no longer stays stale through the pairing window.
+- `_is_encryption_error` narrowed so it no longer swallows a bare ATT
+  "insufficient resources" (transient) or "not permitted" (config) as a pairing
+  failure — those must surface, not be silently dropped on a bonded link.
+- The "pair first" hint re-arms on each reconnect (was suppressed forever after
+  the first emission).
+
 ## [0.3.0] — 2026-07-03
 
 ### Fixed

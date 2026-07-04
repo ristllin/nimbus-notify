@@ -127,7 +127,67 @@ def test_connect_subscribes_and_sends(monkeypatch, transport_factory):
     uuid, data, response = c.writes[0]
     assert uuid == ble.FRAME_CHAR_UUID
     assert data == FRAME                              # whole packet, one write
-    assert response is False                          # Write Without Response
+    assert response is True                           # with-response: triggers
+    #                                                   pairing on the encrypted
+    #                                                   FRAME char (insufficient-
+    #                                                   encryption ATT error)
+
+
+def test_is_encryption_error_classifies_pairing_failures():
+    assert ble._is_encryption_error(Exception("Insufficient Encryption"))
+    assert ble._is_encryption_error(Exception("connection is not authenticated"))
+    assert ble._is_encryption_error(Exception("peripheral is not paired"))
+    assert ble._is_encryption_error(Exception("ATT error: insufficient authentication"))
+    # Narrow on purpose: these must NOT be treated as pairing errors (swallowing
+    # them would hide real frame drops on an already-bonded link).
+    assert not ble._is_encryption_error(Exception("Writing is not permitted"))  # config bug
+    assert not ble._is_encryption_error(Exception("insufficient resources"))    # transient
+    assert not ble._is_encryption_error(Exception("peer disconnected"))
+    assert not ble._is_encryption_error(Exception("operation timed out"))
+
+
+def test_unpaired_write_is_swallowed_not_fatal(monkeypatch, transport_factory):
+    # An unbonded device rejects the encrypted FRAME write; the worker must warn
+    # (once) and keep running so the user has time to pair — never crash/tear down.
+    h = Harness(monkeypatch)
+    t = transport_factory(h)
+    wait_until(lambda: t._connected.is_set(), msg="connect")
+    c = h.clients[0]
+
+    async def _reject(uuid, data, response=True):
+        raise Exception("Insufficient Encryption")
+    c.write_gatt_char = _reject
+
+    assert t.send(FRAME) is True
+    time.sleep(0.1)
+    assert t._connected.is_set()          # survived the rejected write
+    assert t._pairing_warned is True      # user was told to pair (once)
+    assert t._retry_handle is not None    # a retry was armed to re-drive the frame
+
+
+def test_pairing_retry_redrives_frame_after_encrypt(monkeypatch, transport_factory):
+    # macOS upgrades the link to encrypted in place (no reconnect), so the swallowed
+    # first frame must be re-driven by the retry timer once the peer pairs.
+    monkeypatch.setattr(ble, "PAIRING_RETRY_S", 0.02)
+    h = Harness(monkeypatch)
+    t = transport_factory(h)
+    wait_until(lambda: t._connected.is_set(), msg="connect")
+    c = h.clients[0]
+
+    real_write = c.write_gatt_char
+    calls = {"n": 0}
+
+    async def _flaky(uuid, data, response=True):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise Exception("Insufficient Encryption")   # unbonded: first attempt
+        await real_write(uuid, data, response)           # paired: retry succeeds
+    c.write_gatt_char = _flaky
+
+    assert t.send(FRAME) is True
+    wait_until(lambda: any(w[0] == ble.FRAME_CHAR_UUID for w in c.writes),
+               msg="frame re-driven after pairing")
+    assert calls["n"] >= 2                 # first failed, retry landed it
 
 
 def test_send_while_disconnected_retains_and_resends(monkeypatch,

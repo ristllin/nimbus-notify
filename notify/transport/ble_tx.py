@@ -67,6 +67,23 @@ ACK_TIMEOUT_S     = 2.0
 BACKOFF_INITIAL_S = 0.5
 BACKOFF_CAP_S     = 10.0
 CLOSE_TIMEOUT_S   = 5.0
+PAIRING_RETRY_S   = 2.0   # re-drive the current frame while waiting for pairing
+
+
+def _is_encryption_error(exc: Exception) -> bool:
+    """True if a GATT write failed because the link isn't paired/encrypted.
+
+    Nimbus gates its FRAME characteristic behind encryption + MITM auth, so an
+    unbonded write is rejected with an insufficient-encryption/authentication
+    ATT error. bleak surfaces this differently per backend (CoreBluetooth on
+    macOS, BlueZ on Linux), so match on the message text rather than a type.
+    Deliberately NARROW: we do NOT match a bare 'insufficient' (that also covers
+    ATT 'insufficient resources', a transient error on an already-bonded link)
+    or a bare 'not permitted' (WRITE_NOT_PERMITTED is a config bug, not pairing)
+    — swallowing those would hide real frame-drop failures on the proven path."""
+    s = str(exc).lower()
+    return ("encrypt" in s or "authent" in s or "not paired" in s
+            or "insufficient enc" in s or "insufficient authen" in s)
 
 
 class BleTransport:
@@ -87,6 +104,8 @@ class BleTransport:
         self._connected   = threading.Event()
         self._stop        = threading.Event()
         self._established = False            # connected at least once this cycle
+        self._pairing_warned = False        # rate-limit the "pair first" hint
+        self._retry_handle = None           # pending call_later that re-drives a frame while pairing
         self._mtu         = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._wake: asyncio.Event | None = None        # lives on the worker loop
@@ -221,6 +240,12 @@ class BleTransport:
             await self._serve(client, disconnected)
         finally:
             self._connected.clear()
+            # Fresh connection cycle re-surfaces the pairing hint once, and drops
+            # any pending pairing-retry timer from the old session.
+            self._pairing_warned = False
+            if self._retry_handle is not None:
+                self._retry_handle.cancel()
+                self._retry_handle = None
             try:
                 await client.disconnect()
             except Exception:
@@ -259,8 +284,41 @@ class BleTransport:
             log.error("frame %d B exceeds ATT payload %d B — dropped",
                       len(frame), limit)
             return
-        await client.write_gatt_char(FRAME_CHAR_UUID, frame, response=False)
-        log.debug("frame sent (%d B)", len(frame))
+        try:
+            # response=True (NOT write-without-response): the FRAME characteristic
+            # now requires an encrypted + MITM-authenticated link, so an unbonded
+            # write returns an ATT insufficient-encryption error — which is exactly
+            # what makes macOS raise its native pairing sheet. A no-response write
+            # would be dropped silently with no error and never trigger pairing.
+            # Once the Mac is bonded, macOS encrypts transparently and this just
+            # succeeds — no code change needed here.
+            await client.write_gatt_char(FRAME_CHAR_UUID, frame, response=True)
+            log.debug("frame sent (%d B)", len(frame))
+            self._pairing_warned = False
+            if self._retry_handle is not None:      # link is up; drop the retry timer
+                self._retry_handle.cancel()
+                self._retry_handle = None
+        except Exception as exc:
+            if _is_encryption_error(exc):
+                if not self._pairing_warned:
+                    self._pairing_warned = True
+                    log.warning(
+                        "Nimbus rejected the frame — the link isn't paired yet. "
+                        "Pair it once: open System Settings > Bluetooth, click "
+                        "Nimbus, and type the 6-digit code shown on the device "
+                        "screen (also printed on its serial console). After that "
+                        "this works automatically.")
+                # macOS upgrades the SAME connection to encrypted in place (no
+                # reconnect), and frames are event-driven — so without this timer
+                # nothing would re-drive the pending frame once the user pairs, and
+                # the ring would stay stale. Re-arm a single wake to re-attempt the
+                # write until it succeeds (or the session drops, which cancels it).
+                loop = asyncio.get_running_loop()
+                if self._retry_handle is not None:
+                    self._retry_handle.cancel()
+                self._retry_handle = loop.call_later(PAIRING_RETRY_S, self._wake.set)
+                return
+            raise
 
     async def _negotiated_mtu(self, client) -> int:
         """Post-connect ATT MTU, best effort.
