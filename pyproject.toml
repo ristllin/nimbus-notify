@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "nsnotify"
-version = "0.4.1"
+name = "nimbus-notify"
+version = "1.0.0"
 description = "Host broker that watches your AI coding sessions (Claude Code, Codex, Mistral Vibe) and pushes live status to a physical LED ring / e-ink device over a documented wire protocol"
 readme = "README.md"
 license = "MIT"
@@ -31,13 +31,13 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ristllin/nsnotify"
-Repository = "https://github.com/ristllin/nsnotify"
-Changelog = "https://github.com/ristllin/nsnotify/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/ristllin/nimbus-notify"
+Repository = "https://github.com/ristllin/nimbus-notify"
+Changelog = "https://github.com/ristllin/nimbus-notify/blob/main/CHANGELOG.md"
 
 [project.scripts]
 led-report = "notify.cli.led_report:main"
-nsnotify-broker = "notify.broker.server:main"
+nimbus-notify-broker = "notify.broker.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["notify"]

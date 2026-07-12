@@ -1,6 +1,6 @@
 # The nsn wire protocol
 
-nsn ("Nuage Solide Notify") is a small, transport-agnostic binary protocol
+nsn ("Nimbus Notify") is a small, transport-agnostic binary protocol
 for pushing "what is my AI coding session doing right now" state from a host
 to a display device — an LED ring, an e-ink panel, a status light, whatever
 you build. This document is a summary sufficient to implement a compatible

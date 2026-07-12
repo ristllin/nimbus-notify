@@ -6,7 +6,7 @@ the Vibe file watcher (Phase 4).  Maintains per-session state, assigns ring
 segments, and pushes full-state frames to the transport on every change.
 
 Socket path: ~/.local/share/nsnotify/broker.sock
-Run:         nsnotify-broker  (entry point wired in pyproject.toml)
+Run:         nimbus-notify-broker  (entry point wired in pyproject.toml)
 """
 from __future__ import annotations
 
@@ -232,9 +232,109 @@ async def _run(port: str | None = None,
     log.info("broker stopped")
 
 
+# ---- service install (auto-start on reboot) --------------------------------
+# macOS launchd LaunchAgent + Linux systemd --user unit, so the broker survives a
+# reboot/login (the AI-session hooks fire-and-forget into its socket and silently
+# no-op if it's down). ⚠ On macOS do the FIRST BLE bond in the FOREGROUND once
+# (`nimbus-notify-broker --transport ble`) before relying on the detached service —
+# a fully-detached process can't complete the macOS "Just Works" bond. Serial needs
+# no bond. The service uses `--transport auto` (serial if a board is plugged at
+# boot, else BLE).
+
+_LAUNCHD_LABEL = "com.nimbus-notify.broker"
+_SYSTEMD_UNIT  = "nimbus-notify-broker"
+_LOG_PATH      = "/tmp/nimbus-notify-broker.log"
+
+
+def _broker_argv() -> list[str]:
+    """The command that starts the broker, absolute where possible. Prefer the
+    installed console script; fall back to running the module with this interpreter."""
+    import shutil
+    import sys
+    exe = shutil.which("nimbus-notify-broker")
+    if exe:
+        return [exe, "--transport", "auto"]
+    return [sys.executable, "-m", "notify.broker.server", "--transport", "auto"]
+
+
+def _install_service() -> int:
+    import subprocess
+    import sys
+    argv = _broker_argv()
+    if sys.platform == "darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{_LAUNCHD_LABEL}.plist"
+        args_xml = "\n".join(f"    <string>{a}</string>" for a in argv)
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        plist.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+            '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            '<plist version="1.0">\n<dict>\n'
+            f'  <key>Label</key><string>{_LAUNCHD_LABEL}</string>\n'
+            '  <key>ProgramArguments</key>\n  <array>\n'
+            f'{args_xml}\n  </array>\n'
+            '  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><true/>\n'
+            f'  <key>StandardOutPath</key><string>{_LOG_PATH}</string>\n'
+            f'  <key>StandardErrorPath</key><string>{_LOG_PATH}</string>\n'
+            '</dict>\n</plist>\n')
+        uid = os.getuid()
+        # modern (bootstrap) first; fall back to legacy load on older macOS
+        if subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)]).returncode != 0:
+            subprocess.run(["launchctl", "load", str(plist)])
+        print(f"installed launchd service {_LAUNCHD_LABEL}\n  {plist}\n  logs: {_LOG_PATH}")
+        print("⚠ If using BLE: run `nimbus-notify-broker --transport ble` in the foreground "
+              "ONCE first to complete the macOS bond, then it auto-starts on every login.")
+        return 0
+    if sys.platform.startswith("linux"):
+        unit = Path.home() / ".config" / "systemd" / "user" / f"{_SYSTEMD_UNIT}.service"
+        exec_start = " ".join(argv)
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text(
+            "[Unit]\n"
+            "Description=nimbus-notify broker (AI coding session status -> device)\n"
+            "After=network.target\n\n"
+            "[Service]\n"
+            f"ExecStart={exec_start}\n"
+            "Restart=on-failure\nRestartSec=3\n\n"
+            "[Install]\nWantedBy=default.target\n")
+        subprocess.run(["systemctl", "--user", "daemon-reload"])
+        subprocess.run(["systemctl", "--user", "enable", "--now", _SYSTEMD_UNIT])
+        print(f"installed systemd --user service {_SYSTEMD_UNIT}\n  {unit}")
+        print("Tip: `loginctl enable-linger $USER` to keep it running after logout.")
+        return 0
+    print(f"--install-service is not supported on {sys.platform}; run the broker manually.")
+    return 1
+
+
+def _uninstall_service() -> int:
+    import subprocess
+    import sys
+    if sys.platform == "darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{_LAUNCHD_LABEL}.plist"
+        uid = os.getuid()
+        if subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(plist)]).returncode != 0:
+            subprocess.run(["launchctl", "unload", str(plist)])
+        plist.unlink(missing_ok=True)
+        print(f"removed launchd service {_LAUNCHD_LABEL}")
+        return 0
+    if sys.platform.startswith("linux"):
+        unit = Path.home() / ".config" / "systemd" / "user" / f"{_SYSTEMD_UNIT}.service"
+        subprocess.run(["systemctl", "--user", "disable", "--now", _SYSTEMD_UNIT])
+        unit.unlink(missing_ok=True)
+        subprocess.run(["systemctl", "--user", "daemon-reload"])
+        print(f"removed systemd --user service {_SYSTEMD_UNIT}")
+        return 0
+    return 1
+
+
 def _build_parser():
     import argparse
-    p = argparse.ArgumentParser(description="Nuage Solide Notify broker daemon")
+    p = argparse.ArgumentParser(description="Nimbus Notify broker daemon")
+    p.add_argument("--install-service", action="store_true",
+                   help="install the broker as an auto-starting service (macOS launchd / "
+                        "Linux systemd --user) so it survives reboot, then exit")
+    p.add_argument("--uninstall-service", action="store_true",
+                   help="remove the auto-start service installed by --install-service, then exit")
     p.add_argument("--port",
                    help="Serial port (serial transport only; default: auto-detect)")
     p.add_argument("--transport", choices=("serial", "ble", "auto"),
@@ -255,7 +355,12 @@ def _build_parser():
 
 
 def main() -> None:
+    import sys
     args = _build_parser().parse_args()
+    if args.install_service:
+        sys.exit(_install_service())
+    if args.uninstall_service:
+        sys.exit(_uninstall_service())
     asyncio.run(_run(port=args.port,
                      transport_kind=args.transport,
                      ble_address=args.ble_address,

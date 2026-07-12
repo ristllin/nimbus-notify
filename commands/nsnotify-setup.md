@@ -51,21 +51,30 @@ Write the merged result back to `~/.claude/settings.json`.
 
 Confirm with: "Claude Code hooks installed ✓"
 
-### 4 — Check broker status
+### 4 — Install the broker as an auto-starting service
+
+The broker is a long-lived listener the session hooks fire into; if it isn't
+running the device just stops updating. Install it so it **auto-starts on every
+reboot/login** (macOS launchd / Linux systemd) instead of a hand-started process.
+
+**⚠ BLE first-bond caveat (macOS):** a fully-detached process can't complete the
+macOS "Just Works" bond. If the device connects over **BLE**, run one foreground
+bond FIRST, then install the service. **Serial needs no bond — skip to install.**
 
 ```bash
-pgrep -f nsnotify-broker && echo "running" || echo "not running"
+# 1. (BLE only) one-time foreground bond — leave it running until the ring lights,
+#    then Ctrl-C:
+nimbus-notify-broker --transport ble
+
+# 2. install the auto-start service (uses --transport auto: serial if a board is
+#    plugged at boot, else BLE):
+nimbus-notify-broker --install-service
+
+# verify it's running unattended:
+pgrep -f nimbus-notify-broker && echo "running ✓" || echo "not running"
 ```
 
-If not running, show the user how to start it:
-
-```
-Start the broker in a terminal:
-  nsnotify-broker
-
-Or in the background:
-  nsnotify-broker &
-```
+To remove it later: `nimbus-notify-broker --uninstall-service`.
 
 ### 5 — Show Codex and Vibe instructions
 
@@ -102,7 +111,7 @@ Print a single status table:
 |-------------------|----------|
 | Python package    | ✓ / ✗   |
 | Claude hooks      | ✓        |
-| Broker daemon     | running / needs start |
+| Broker daemon     | auto-start installed / running |
 | Codex hooks       | manual   |
 | Vibe hooks        | manual   |
 | Device            | user-confirmed |

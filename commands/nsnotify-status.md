@@ -3,18 +3,18 @@ description: Show the current LED ring state — which sessions are active and w
 allowed-tools: Bash
 ---
 
-Show the current status of the Nuage Solide Notify LED ring.
+Show the current status of the Nimbus Notify LED ring.
 
 ## Steps
 
 ### 1 — Check broker
 
 ```bash
-pgrep -f nsnotify-broker && echo "running" || echo "not running"
+pgrep -f nimbus-notify-broker && echo "running" || echo "not running"
 ```
 
 If not running, reply:
-> Broker is not running. Start it with: `nsnotify-broker`
+> Broker is not running. Start it with: `nimbus-notify-broker`
 
 ### 2 — Read status file
 

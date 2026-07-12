@@ -1,4 +1,4 @@
-# nsnotify
+# nimbus-notify
 
 A Python host broker that watches your AI coding-agent sessions — **Claude
 Code**, **Codex**, and **Mistral Vibe** — via lightweight hooks, and pushes
@@ -7,7 +7,7 @@ errored) to a physical display device over serial (USB-CDC) or Bluetooth LE,
 using a small documented binary protocol ([nsn](docs/protocol.md)).
 
 If you've got several agent sessions going in parallel across different
-terminals and projects, nsnotify gives you one glanceable place — an LED
+terminals and projects, nimbus-notify gives you one glanceable place — an LED
 ring, an e-ink panel, whatever device you point it at — to see which ones
 are still working and which ones are waiting on you.
 
@@ -28,7 +28,7 @@ private monorepo into its own package — see [CHANGELOG.md](CHANGELOG.md).
 
 ## Compatible devices
 
-nsnotify speaks a documented, transport-agnostic wire protocol — see
+nimbus-notify speaks a documented, transport-agnostic wire protocol — see
 [docs/protocol.md](docs/protocol.md). Any device that implements the
 protocol's serial or BLE side can be driven by this broker; nothing here is
 tied to a specific piece of hardware. If you build (or already have) a
@@ -40,19 +40,19 @@ status display, point it at this broker.
 Not yet on PyPI — install from a clone:
 
 ```bash
-git clone https://github.com/ristllin/nsnotify.git
-cd nsnotify
+git clone https://github.com/ristllin/nimbus-notify.git
+cd nimbus-notify
 pip install -e .
 ```
 
 This installs two commands on your `PATH`:
 
-- `nsnotify-broker` — the daemon that maintains session state and talks to
+- `nimbus-notify-broker` — the daemon that maintains session state and talks to
   your device.
 - `led-report` — the small CLI that harness hooks call to report events
   into the broker (fire-and-forget; never blocks your agent).
 
-PyPI publishing (`pip install nsnotify`) is a planned next step — for now,
+PyPI publishing (`pip install nimbus-notify`) is a planned next step — for now,
 the git-clone path above is the supported install method.
 
 ## Quickstart
@@ -61,7 +61,7 @@ the git-clone path above is the supported install method.
 2. Wire up the harness(es) you use — see [Harnesses](#harnesses) below.
 3. Start the broker:
    ```bash
-   nsnotify-broker
+   nimbus-notify-broker
    ```
 4. Start (or resume) an agent session in a wired-up harness. Its status
    should now be reported to the broker, and forwarded to your device.
@@ -71,7 +71,7 @@ see [Claude Code plugin](#claude-code-plugin) below.
 
 ## Harnesses
 
-nsnotify supports three AI coding harnesses today. Each harness reports
+nimbus-notify supports three AI coding harnesses today. Each harness reports
 events (session start, a tool running, waiting on your approval, done,
 errored, session end) by calling `led-report <harness> <verb>` from a hook.
 
@@ -129,18 +129,18 @@ you install it as a plugin, two slash commands become available:
 Pick a transport with `--transport`:
 
 ```bash
-nsnotify-broker --transport serial   # default
-nsnotify-broker --transport ble
-nsnotify-broker --transport auto     # serial if a device is plugged in at
+nimbus-notify-broker --transport serial   # default
+nimbus-notify-broker --transport ble
+nimbus-notify-broker --transport auto     # serial if a device is plugged in at
                                       # startup, else BLE
 ```
 
 - **Serial** auto-detects a likely USB-CDC port (Espressif native-USB VID
   `0x303A`, or common USB-UART bridge chips), or pin one explicitly:
-  `nsnotify-broker --transport serial --port /dev/cu.usbmodem101`.
+  `nimbus-notify-broker --transport serial --port /dev/cu.usbmodem101`.
 - **BLE** requires your device to be powered on, flashed with firmware that
   advertises the nsn BLE service, and in range. Optionally pin a specific
-  device: `nsnotify-broker --transport ble --ble-address <address>`
+  device: `nimbus-notify-broker --transport ble --ble-address <address>`
   (a CoreBluetooth UUID on macOS, a MAC address on Linux). Without
   `--ble-address`, the broker scans for the nsn service UUID.
 
@@ -162,7 +162,7 @@ stops anyone in radio range from painting your ring. Bonding is **automatic**
 - **Do the first bond with the broker in the foreground.** macOS only completes
   a bond for a process running in your normal login session — a fully detached
   process (e.g. `nohup … & disown`) is too detached and the bond silently fails.
-  So the *first* time, just run `nsnotify-broker --transport ble` in a normal
+  So the *first* time, just run `nimbus-notify-broker --transport ble` in a normal
   terminal and leave it up for a few seconds. Once bonded, the bond persists on
   both the device (flash) and your Mac, and every session after that is
   transparent — you can then run it backgrounded or as a service (below).
@@ -182,7 +182,7 @@ whenever you're coding, not started by hand each time.
 
 ### macOS (launchd)
 
-Create `~/Library/LaunchAgents/com.nsnotify.broker.plist`:
+Create `~/Library/LaunchAgents/com.nimbus-notify.broker.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -190,18 +190,18 @@ Create `~/Library/LaunchAgents/com.nsnotify.broker.plist`:
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.nsnotify.broker</string>
+  <key>Label</key><string>com.nimbus-notify.broker</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/env</string>
-    <string>nsnotify-broker</string>
+    <string>nimbus-notify-broker</string>
     <string>--transport</string>
     <string>auto</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/nsnotify-broker.log</string>
-  <key>StandardErrorPath</key><string>/tmp/nsnotify-broker.log</string>
+  <key>StandardOutPath</key><string>/tmp/nimbus-notify-broker.log</string>
+  <key>StandardErrorPath</key><string>/tmp/nimbus-notify-broker.log</string>
 </dict>
 </plist>
 ```
@@ -209,19 +209,19 @@ Create `~/Library/LaunchAgents/com.nsnotify.broker.plist`:
 Then:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.nsnotify.broker.plist
+launchctl load ~/Library/LaunchAgents/com.nimbus-notify.broker.plist
 ```
 
 ### Linux (systemd, user service)
 
-Create `~/.config/systemd/user/nsnotify-broker.service`:
+Create `~/.config/systemd/user/nimbus-notify-broker.service`:
 
 ```ini
 [Unit]
-Description=nsnotify broker
+Description=nimbus-notify broker
 
 [Service]
-ExecStart=%h/.local/bin/nsnotify-broker --transport auto
+ExecStart=%h/.local/bin/nimbus-notify-broker --transport auto
 Restart=on-failure
 
 [Install]
@@ -232,11 +232,11 @@ Then:
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now nsnotify-broker
+systemctl --user enable --now nimbus-notify-broker
 ```
 
 Adjust `ExecStart` to wherever `pip install -e .` put the entry point
-(check with `which nsnotify-broker`).
+(check with `which nimbus-notify-broker`).
 
 ## The nsn wire protocol
 

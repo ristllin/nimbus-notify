@@ -6,8 +6,8 @@ new transports, or devices you've gotten talking to the broker.
 ## Development setup
 
 ```bash
-git clone https://github.com/ristllin/nsnotify.git
-cd nsnotify
+git clone https://github.com/ristllin/nimbus-notify.git
+cd nimbus-notify
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 pip install pytest pytest-asyncio

@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows the convention described in
 [CONTRIBUTING.md](CONTRIBUTING.md#versioning) (semver-for-0.x pre-1.0).
 
+## [1.0.0] — 2026-07-12
+
+### Changed
+
+- **Renamed the pip distribution `nsnotify` → `nimbus-notify`** (brand alignment
+  with the Nimbus device) and the console script `nsnotify-broker` →
+  `nimbus-notify-broker`. The import package stays **`notify`** and the Claude
+  Code plugin/skill names are unchanged. The nsn wire protocol is untouched.
+- **First PyPI release** — `pip install nimbus-notify` (published via GitHub
+  Actions Trusted Publishing).
+
+### Added
+
+- `nimbus-notify-broker --install-service` / `--uninstall-service`: install the
+  broker as an auto-starting service (macOS launchd / Linux systemd user unit) so
+  it survives a reboot. Wired into `/nsnotify-setup` after the one-time
+  foreground BLE bond.
+
 ## [0.4.1] — 2026-07-04
 
 ### Changed
@@ -70,7 +88,7 @@ versioning follows the convention described in
 
 ### Added
 
-- `nsnotify-broker --ble-name <NAME>`: connect only to a BLE peripheral
+- `nimbus-notify-broker --ble-name <NAME>`: connect only to a BLE peripheral
   advertising this exact name (still gated on the nsn service UUID). Lets
   several boards running this firmware on one desk stay unambiguous — e.g. a
   bench board named `Nimbus-BT` vs a production `Nimbus`. On macOS this is the
@@ -83,7 +101,7 @@ standalone package.
 
 ### Added
 
-- Broker daemon (`nsnotify-broker`) that maintains live session state over a
+- Broker daemon (`nimbus-notify-broker`) that maintains live session state over a
   Unix socket and pushes nsn wire-protocol frames to a connected device.
 - `led-report` CLI, invoked from harness hooks to report session events to
   the broker (fire-and-forget, never blocks the calling harness).
@@ -93,7 +111,7 @@ standalone package.
 - Two transports: **serial** (USB-CDC, auto-detects Espressif native-USB and
   common USB-UART bridge chips) and **BLE** (GATT central, with
   scan/connect/serve/backoff reconnection, MTU negotiation, and full-state
-  resend on every reconnect). Select with `nsnotify-broker --transport
+  resend on every reconnect). Select with `nimbus-notify-broker --transport
   serial|ble|auto`.
 - Drop-in hook configs for all three harnesses under `hooks/`.
 - Claude Code plugin (`.claude-plugin/plugin.json` + `commands/`) providing
@@ -101,4 +119,4 @@ standalone package.
 - `docs/protocol.md` — a standalone description of the nsn wire protocol for
   anyone implementing a compatible device.
 
-[0.1.0]: https://github.com/ristllin/nsnotify/releases/tag/v0.1.0
+[0.1.0]: https://github.com/ristllin/nimbus-notify/releases/tag/v0.1.0

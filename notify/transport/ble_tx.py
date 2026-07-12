@@ -112,7 +112,7 @@ class BleTransport:
         self._stopping: asyncio.Event | None = None    # lives on the worker loop
         self._ack: asyncio.Event | None = None         # per-session conn ack
         self._thread = threading.Thread(target=self._worker,
-                                        name="nsnotify-ble", daemon=True)
+                                        name="nimbus-notify-ble", daemon=True)
         self._thread.start()
 
     def send(self, frame: bytes) -> bool:
