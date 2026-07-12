@@ -38,6 +38,19 @@ versioning follows the convention described in
   eviction TTL (default 120, floored at 5). Lower it for a snappier ring; raise
   it to keep quiet-but-alive sessions on the ring longer. Call-to-action states
   always hold 900 s regardless.
+- **nsn wire protocol v2** — the frame may now carry an optional per-segment
+  `[harness][title]` extension so the device e-ink can NAME a session (e.g.
+  "codex nimbus: running") instead of "job N". Backward-compatible under the same
+  frame magic: the broker only appends the extension when a segment carries
+  harness/title, so plain v1 frames stay byte-identical and a v1 device ignores
+  the trailing (still CRC-covered) bytes. Byte-locked to the Nimbus device codec.
+
+### Fixed
+
+- The broker's `status.json` writer no longer crashes with `FileNotFoundError`
+  when its state directory (`~/.local/share/nsnotify/`) doesn't yet exist — it
+  now creates the directory on demand, so a frame pushed before `_run()` set
+  things up (e.g. in tests, or if the dir is removed at runtime) writes cleanly.
 
 ## [1.0.0] — 2026-07-12
 

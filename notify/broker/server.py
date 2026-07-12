@@ -138,6 +138,10 @@ class Broker:
             ],
         }
         path = SOCKET_PATH.parent / "status.json"
+        # Ensure the state dir exists even if _run() never created it — a frame
+        # can be pushed straight from handle_event (tests, or an embedder that
+        # skips _run), and the dir could be removed at runtime. Cheap + idempotent.
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp  = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(status, indent=2))
         tmp.replace(path)
