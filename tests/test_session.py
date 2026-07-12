@@ -13,6 +13,7 @@ def test_verb_to_state_known():
     assert verb_to_state("approval")           == State.AwaitingApproval
     assert verb_to_state("notify:idle_prompt") == State.WaitingInput
     assert verb_to_state("notify:permission_prompt") == State.AwaitingApproval
+    assert verb_to_state("plan_pending")       == State.WaitingInput
 
 
 def test_verb_to_state_unknown_defaults_to_running():
@@ -52,3 +53,29 @@ def test_touch_resets_staleness(monkeypatch):
     rec.touch()
     # After touch, last_event = future; is_stale checks future - future = 0 < TTL
     assert not rec.is_stale(ttl=SESSION_TTL_S)
+
+
+def _codex_event(verb, stdin_json, monkeypatch):
+    import io
+    from notify.harness import codex
+    monkeypatch.setattr("sys.stdin", io.StringIO(stdin_json))
+    return codex.build_event(verb)
+
+
+def test_codex_plan_mode_stop_becomes_waiting_input(monkeypatch):
+    # A Stop hook in plan mode = "here's my plan, waiting on you", not Done.
+    ev = _codex_event("done", '{"session_id":"s1","cwd":"/w","permission_mode":"plan"}', monkeypatch)
+    assert ev.verb == "plan_pending"
+    assert verb_to_state(ev.verb) == State.WaitingInput
+
+
+def test_codex_normal_stop_stays_done(monkeypatch):
+    ev = _codex_event("done", '{"session_id":"s1","cwd":"/w","permission_mode":"default"}', monkeypatch)
+    assert ev.verb == "done"
+    assert verb_to_state(ev.verb) == State.Done
+
+
+def test_codex_running_never_reinterpreted(monkeypatch):
+    # Only "done" is re-tagged; a plan-mode running stays running.
+    ev = _codex_event("running", '{"session_id":"s1","cwd":"/w","permission_mode":"plan"}', monkeypatch)
+    assert ev.verb == "running"

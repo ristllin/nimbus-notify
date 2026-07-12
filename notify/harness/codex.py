@@ -35,6 +35,16 @@ def parse_stdin() -> dict[str, Any]:
 def build_event(verb: str) -> HarnessEvent:
     """Build a HarnessEvent from a CLI verb + Codex hook stdin JSON."""
     body = parse_stdin()
+    # Codex has no dedicated "agent asked a plan question" hook: in PLAN mode a turn
+    # ends by presenting a plan and waiting for the human, but that fires the same
+    # Stop hook as a finished turn → the ring showed Done (green) when it was really
+    # WaitingInput ("zilch / green while it waits on me", owner-reported). permission_mode
+    # is a common Codex hook field; when a Stop lands in plan mode, re-tag it so the
+    # device lights WaitingInput (breathe) instead of Done. Only "done" is reinterpreted
+    # — running/approval/error already carry their own meaning.
+    mode = str(body.get("permission_mode", "")).lower()
+    if verb == "done" and mode == "plan":
+        verb = "plan_pending"
     return HarnessEvent(
         harness=    "codex",
         session_id= body.get("session_id", ""),

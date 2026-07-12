@@ -92,6 +92,7 @@ _VERB_TO_STATE: dict[str, State] = {
     "notify:elicitation_dialog":State.WaitingInput,
     "notify:idle_prompt":       State.WaitingInput,       # Claude idle 60 s
     "hitl_inferred":            State.AwaitingApproval,   # Vibe heuristic
+    "plan_pending":             State.WaitingInput,       # Codex plan-mode Stop = waiting on you
 }
 
 
