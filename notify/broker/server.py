@@ -18,7 +18,7 @@ import signal
 import threading
 from pathlib import Path
 
-from notify.broker.frame import FrameSegment, encode_frame
+from notify.broker.frame import FrameSegment, HARNESS_CODE, encode_frame
 from notify.broker.segments import SegmentAllocator
 from notify.broker.session import CTA_TTL_S, SESSION_TTL_S, SessionRecord, verb_to_state
 from notify.harness.vibe import VibeWatcher
@@ -104,7 +104,17 @@ class Broker:
 
     def _push_frame(self) -> None:
         records  = self._allocator.active_segments()
-        segments = [FrameSegment.from_state(r.state) for r in records]
+        # nsn v2: carry the harness + a short title (cwd basename) per segment so the
+        # device e-ink NAMES a session ("codex nimbus: running") instead of "job N".
+        # Byte-compatible: a v1 device ignores the trailing TLVs. (A protoVer gate to
+        # suppress v2 for old firmware is a future refinement; small v2 frames fit the
+        # v1 buffer anyway.)
+        segments = []
+        for r in records:
+            seg = FrameSegment.from_state(r.state)
+            seg.harness = HARNESS_CODE.get(r.harness, 0)
+            seg.title = os.path.basename(r.cwd.rstrip("/")) if r.cwd else ""
+            segments.append(seg)
         frame    = encode_frame(segments, BRIGHTNESS, self._seq)
         self._seq = (self._seq + 1) & 0xFF
         ok = self._transport.send(frame)
