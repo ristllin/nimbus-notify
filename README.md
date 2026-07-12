@@ -37,12 +37,8 @@ status display, point it at this broker.
 
 ## Install
 
-Not yet on PyPI — install from a clone:
-
 ```bash
-git clone https://github.com/ristllin/nimbus-notify.git
-cd nimbus-notify
-pip install -e .
+pip install nimbus-notify
 ```
 
 This installs two commands on your `PATH`:
@@ -52,8 +48,13 @@ This installs two commands on your `PATH`:
 - `led-report` — the small CLI that harness hooks call to report events
   into the broker (fire-and-forget; never blocks your agent).
 
-PyPI publishing (`pip install nimbus-notify`) is a planned next step — for now,
-the git-clone path above is the supported install method.
+To hack on it, install from source instead:
+
+```bash
+git clone https://github.com/ristllin/nimbus-notify.git
+cd nimbus-notify
+pip install -e .
+```
 
 ## Quickstart
 
@@ -178,11 +179,34 @@ To un-bond: on the device, *Connectivity → Forget paired devices* (or the
 ## Running persistently
 
 For day-to-day use you'll want the broker running in the background
-whenever you're coding, not started by hand each time.
+whenever you're coding, not started by hand each time — it's a long-lived
+listener the session hooks fire into, so if it isn't running your device just
+stops updating.
+
+### Recommended: `--install-service`
+
+One command installs (and later removes) the auto-start service — a macOS
+launchd LaunchAgent or a Linux systemd user unit — that starts the broker at
+every login/reboot:
+
+```bash
+nimbus-notify-broker --install-service     # enable auto-start
+nimbus-notify-broker --uninstall-service   # remove it
+```
+
+**⚠ macOS + BLE:** run `nimbus-notify-broker --transport ble` in the foreground
+**once** first to complete the "Just Works" bond (a fully-detached process can't
+— see [Bonding the BLE link](#bonding-the-ble-link-one-time)); serial needs no
+bond. The service uses
+`--transport auto` (serial if a board is plugged at boot, else BLE).
+
+The rest of this section documents what `--install-service` writes, if you'd
+rather manage it by hand.
 
 ### macOS (launchd)
 
-Create `~/Library/LaunchAgents/com.nimbus-notify.broker.plist`:
+`--install-service` writes `~/Library/LaunchAgents/com.nimbus-notify.broker.plist`
+(equivalent to creating it yourself):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
