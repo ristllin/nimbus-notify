@@ -59,16 +59,71 @@ pip install -e .
 ## Quickstart
 
 1. Install the package (above).
-2. Wire up the harness(es) you use — see [Harnesses](#harnesses) below.
-3. Start the broker:
+2. **Connect your device** to this computer — over USB or Bluetooth. See
+   [Connecting your device](#connecting-your-device) below (it's one command).
+3. Wire up the harness(es) you use — see [Harnesses](#harnesses) below.
+4. Start the broker (if it isn't already up from step 2):
    ```bash
-   nimbus-notify-broker
+   nimbus-notify-broker            # or: --transport ble   /   --transport auto
    ```
-4. Start (or resume) an agent session in a wired-up harness. Its status
+5. Start (or resume) an agent session in a wired-up harness. Its status
    should now be reported to the broker, and forwarded to your device.
 
 If you use Claude Code, the fastest path is the bundled slash commands —
 see [Claude Code plugin](#claude-code-plugin) below.
+
+## Connecting your device
+
+The broker talks to your status device **one of two ways** — you don't need
+both, pick whichever fits:
+
+### Option A — USB cable (simplest)
+
+Plug the device into your computer with a USB cable and run:
+
+```bash
+nimbus-notify-broker --transport serial      # or just: nimbus-notify-broker
+```
+
+The broker auto-detects the port. That's it — no pairing, no setup. Good for a
+device that sits on your desk next to the machine. (To pin a specific port:
+`--transport serial --port /dev/cu.usbmodem101`.)
+
+### Option B — Bluetooth, no cable (wireless)
+
+If the device is powered from a wall plug / battery and you **don't** want a USB
+cable to your computer, use Bluetooth LE. There is **nothing to pair in System
+Settings** — macOS bonds on demand the first time the broker touches the device:
+
+1. **Power on the device** and make sure it's in **Notifier** mode and in radio
+   range. (Notifier is the status-light mode; if the device is in Orchestrator
+   mode, switch it from the device's knob menu or its web page.)
+2. Run the broker **in the foreground**, once:
+   ```bash
+   nimbus-notify-broker --transport ble
+   ```
+3. The **first** time, macOS completes a silent "Just Works" bond (no code to
+   type, no dialog). Leave the broker running for a few seconds — the device's
+   ring will start reflecting your sessions once a frame arrives.
+
+> **Why foreground the first time?** macOS only finishes the bond for a process
+> in your normal login session, so don't background it (`nohup … &`) for the
+> *first* connect. After the bond is stored (on both the Mac and the device's
+> flash) every later run is transparent and can be backgrounded or run as a
+> [service](#running-persistently). Full detail + un-bonding:
+> [Bonding the BLE link](#bonding-the-ble-link-one-time).
+
+**Which do I have?** If you flashed the firmware yourself over USB, the cable is
+already there — use Option A. If the device is across the desk on its own power,
+use Option B. `--transport auto` picks serial when a board is plugged in at
+startup, else Bluetooth.
+
+> **First time with a brand-new device?** Getting the device onto your Wi-Fi,
+> naming it, and choosing Notifier vs Orchestrator is a separate one-time setup
+> done from the **device itself** (its setup Wi-Fi + a QR code), not from this
+> broker — see the Nimbus
+> [First-time setup guide](https://ristllin.github.io/Nimbus/docs/getting-started/first-time-setup).
+> For plain Notifier-over-Bluetooth you don't even need Wi-Fi — just Option B above.
 
 ## Harnesses
 
