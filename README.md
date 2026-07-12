@@ -148,6 +148,24 @@ nimbus-notify-broker --transport auto     # serial if a device is plugged in at
 Transport selection happens once at startup — there's no live failover
 between serial and BLE mid-session in this version.
 
+### Session eviction (`--ttl`)
+
+A session that ends **cleanly** (`/exit`, Ctrl-D) frees its ring segment
+instantly via the `SessionEnd` hook. A session that is **hard-killed** (closing
+the terminal, `kill`, force-quit) never runs that hook, so the broker reaps it
+after an idle timeout instead:
+
+```bash
+nimbus-notify-broker --ttl 120   # default: drop a silent benign session after 120 s
+```
+
+- `--ttl SECONDS` sets the window for **benign** states (idle / running / done).
+  Lower it for a snappier ring; raise it to keep quiet-but-alive sessions on the
+  ring longer. Floored at 5 s.
+- **Call-to-action** states (awaiting approval / awaiting input / error) always
+  hold **900 s** regardless of `--ttl`, so a job that's blocked *on you* can't
+  quietly disappear from the ring while it's still pending.
+
 ### Bonding the BLE link (one time)
 
 Recent Nimbus firmware **secures the BLE link** (bonded + encrypted, LE Secure

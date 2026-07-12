@@ -21,9 +21,10 @@ Every meaningful release: bump `version` in `pyproject.toml`, add a
 `git tag -a vX.Y.Z -m "..."` — then push the tag so consumers can pin to a
 specific release instead of tracking `main`.
 
-Semver-for-0.x (pre-1.0): MAJOR stays `0`; MINOR bumps for a new or changed
-public surface (CLI flags, hook payload shape, wire-protocol version,
-breaking or not); PATCH for a fix or internal change with no public-surface
+Semver (post-1.0): MAJOR bumps for a **breaking** public-surface change
+(removed/renamed CLI flag, incompatible hook payload or wire-protocol version);
+MINOR for a backward-compatible new or changed public surface (a new CLI flag,
+an added field); PATCH for a fix or internal change with no public-surface
 change. One release can bundle multiple logical commits under one bump —
 just say so in the CHANGELOG entry.
 

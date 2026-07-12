@@ -13,8 +13,41 @@ from dataclasses import dataclass, field
 
 from notify.state import State
 
-# Default TTL: free the segment if no event arrives in 15 minutes.
-SESSION_TTL_S = 900.0
+# Idle-eviction TTL: free the segment if no event arrives in this many seconds.
+# This is the reaper for sessions that vanished WITHOUT a clean "end" event — a
+# hard kill (closing the terminal, `kill`, force-quit) terminates the harness
+# before its SessionEnd/`end` hook can run, so the broker never hears "Offline"
+# and the session sticks at its last state. A graceful exit still frees the
+# segment INSTANTLY via the hook; the TTL only catches the abrupt-kill case.
+#
+# TWO windows, keyed on the session's last state (a segment's last_event is only
+# refreshed by inbound events, and a call-to-action fires exactly ONE event then
+# goes quiet while it waits on the human — so a single TTL blind to state would
+# reap a live "needs you" session):
+#
+#   SESSION_TTL_S (120 s, was 900 s) — benign/ambient states (Idle / Running /
+#     Done). A killed session almost always lands here, so 2 min clears it
+#     promptly. Trade-off: a genuinely idle-but-alive session is also dropped
+#     after the TTL, but it reappears the instant it does anything. `--ttl` tunes
+#     this window (see server.py).
+#
+#   CTA_TTL_S (900 s) — call-to-action states (WaitingInput / AwaitingApproval /
+#     Error): a job blocked ON the human. Kept at the original 15 min so the
+#     ring's highest-value signal can't vanish while it's still pending. A
+#     killed CTA session therefore lingers longer — the safe direction (better
+#     to over-show a pending job than to hide a live one). Never shorter than
+#     the benign window (the broker clamps: max(benign_ttl, CTA_TTL_S)).
+SESSION_TTL_S = 120.0
+CTA_TTL_S     = 900.0
+
+# States that mean "a human needs to act" (or a failure worth surfacing). Held
+# on the ring for CTA_TTL_S, not the short SESSION_TTL_S. Mirrors the firmware's
+# own CTA-hold design (input/approval/error never silently expire).
+CTA_STATES: frozenset = frozenset({
+    State.WaitingInput,
+    State.AwaitingApproval,
+    State.Error,
+})
 
 
 @dataclass

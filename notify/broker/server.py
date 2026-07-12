@@ -20,7 +20,7 @@ from pathlib import Path
 
 from notify.broker.frame import FrameSegment, encode_frame
 from notify.broker.segments import SegmentAllocator
-from notify.broker.session import SESSION_TTL_S, SessionRecord, verb_to_state
+from notify.broker.session import CTA_TTL_S, SESSION_TTL_S, SessionRecord, verb_to_state
 from notify.harness.vibe import VibeWatcher
 from notify.state import State
 from notify.transport import Transport
@@ -30,14 +30,26 @@ log = logging.getLogger(__name__)
 
 SOCKET_PATH = Path.home() / ".local" / "share" / "nsnotify" / "broker.sock"
 BRIGHTNESS  = 30
-TTL_CHECK_S = 60.0   # how often to sweep for stale sessions
+TTL_CHECK_S = 60.0   # upper bound on how often to sweep for stale sessions
+MIN_TTL_S   = 5.0    # floor: never reap a session that's only seconds idle
 
 
 class Broker:
-    def __init__(self, transport: Transport) -> None:
+    def __init__(self, transport: Transport, ttl: float = SESSION_TTL_S) -> None:
         self._transport = transport
         self._allocator = SegmentAllocator()
         self._seq       = 0
+        # Idle-eviction TTLs (seconds) + how often to sweep. Two windows: benign
+        # states (Idle/Running/Done) age out at self._ttl; call-to-action states
+        # (a job blocked on the human) hold self._cta_ttl so the ring's "needs
+        # you" signal can't vanish while pending — never shorter than the benign
+        # window. The sweep is adaptive: a short TTL is useless if we only check
+        # every 60 s, so the interval tracks the (shorter) benign TTL — ¼ of it,
+        # but never slower than TTL_CHECK_S nor faster than MIN_TTL_S. Worst-case
+        # benign linger ≈ ttl + _ttl_check.
+        self._ttl       = max(MIN_TTL_S, ttl)
+        self._cta_ttl   = max(self._ttl, CTA_TTL_S)
+        self._ttl_check = max(MIN_TTL_S, min(TTL_CHECK_S, self._ttl / 4.0))
         # handle_event is called from TWO threads — the asyncio socket handler
         # (led-report events) and the VibeWatcher daemon thread (session
         # start/end + HITL inference).  Serialize so the allocator/seq/frame
@@ -126,11 +138,12 @@ class Broker:
 
     async def _ttl_loop(self) -> None:
         while True:
-            await asyncio.sleep(TTL_CHECK_S)
+            await asyncio.sleep(self._ttl_check)
             with self._lock:
-                evicted = self._allocator.evict_stale()
+                evicted = self._allocator.evict_stale(self._ttl, self._cta_ttl)
                 if evicted:
-                    log.info("evicted stale sessions: %s", evicted)
+                    log.info("evicted stale sessions (ttl=%.0fs/cta=%.0fs): %s",
+                             self._ttl, self._cta_ttl, evicted)
                     self._push_frame()
 
 
@@ -186,13 +199,17 @@ async def _handle_client(broker: Broker,
 async def _run(port: str | None = None,
                transport_kind: str = "serial",
                ble_address: str | None = None,
-               ble_name: str | None = None) -> None:
+               ble_name: str | None = None,
+               ttl: float = SESSION_TTL_S) -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     transport = _make_transport(transport_kind, port=port,
                                 ble_address=ble_address, ble_name=ble_name)
-    broker    = Broker(transport)
+    broker    = Broker(transport, ttl=ttl)
+    log.info("idle-session TTL: %.0fs benign / %.0fs call-to-action "
+             "(sweep every %.0fs)",
+             broker._ttl, broker._cta_ttl, broker._ttl_check)
 
     # Vibe has no session start/stop hook: a background watcher on
     # ~/.vibe/logs/session/ supplies start/end + HITL inference, firing events
@@ -351,6 +368,20 @@ def _build_parser():
                         "bench board named 'Nimbus-BT' vs a production 'Nimbus'. "
                         "On macOS this is the reliable discriminator (the MAC is "
                         "hidden).")
+    p.add_argument("--ttl", type=float, default=SESSION_TTL_S,
+                   metavar="SECONDS",
+                   help=f"Idle-session eviction TTL in seconds for benign states "
+                        f"(default: {SESSION_TTL_S:.0f}). A session whose harness "
+                        "sends no events for this long is dropped from the ring — "
+                        "this is what clears sessions that were KILLED (closed "
+                        "terminal / kill / force-quit) without emitting a clean "
+                        "'end'. Lower = killed/abandoned sessions clear faster; a "
+                        "genuinely idle-but-alive session also drops but reappears "
+                        "on its next activity. Call-to-action states (awaiting "
+                        f"approval / input / error) always hold {CTA_TTL_S:.0f}s "
+                        "instead, so a job blocked on you can't vanish. Clean exits "
+                        "clear instantly via the SessionEnd hook regardless. "
+                        f"Floored at {MIN_TTL_S:.0f}s.")
     return p
 
 
@@ -364,7 +395,8 @@ def main() -> None:
     asyncio.run(_run(port=args.port,
                      transport_kind=args.transport,
                      ble_address=args.ble_address,
-                     ble_name=args.ble_name))
+                     ble_name=args.ble_name,
+                     ttl=args.ttl))
 
 
 if __name__ == "__main__":

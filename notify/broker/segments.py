@@ -13,7 +13,7 @@ Rules:
 """
 from __future__ import annotations
 
-from notify.broker.session import SessionRecord
+from notify.broker.session import CTA_STATES, CTA_TTL_S, SESSION_TTL_S, SessionRecord
 from notify.state import State, STATE_PRIORITY
 
 MAX_SEGS = 16
@@ -61,9 +61,22 @@ class SegmentAllocator:
             self._used.discard(idx)
         self._sessions.pop(session_id, None)
 
-    def evict_stale(self) -> list[str]:
-        """Remove sessions that have exceeded their TTL.  Returns evicted ids."""
-        stale = [sid for sid, rec in self._sessions.items() if rec.is_stale()]
+    def evict_stale(self, ttl: float = SESSION_TTL_S,
+                    cta_ttl: float = CTA_TTL_S) -> list[str]:
+        """Remove idle sessions.  Returns evicted ids.
+
+        Two windows, keyed on state: benign/ambient states (Idle/Running/Done)
+        use ``ttl``; call-to-action states (:data:`~notify.broker.session.CTA_STATES`
+        — a job blocked ON the human) use the longer ``cta_ttl`` so the ring's
+        "needs you" signal can't be reaped while it's still pending. Both default
+        to the module constants; the broker passes its own (possibly
+        ``--ttl``-overridden) values. Catches sessions killed without a clean
+        ``end`` — the common killed case (Idle/Running) clears at ``ttl``.
+        """
+        stale = [
+            sid for sid, rec in self._sessions.items()
+            if rec.is_stale(cta_ttl if rec.state in CTA_STATES else ttl)
+        ]
         for sid in stale:
             self.free(sid)
         return stale

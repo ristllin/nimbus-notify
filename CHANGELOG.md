@@ -4,7 +4,40 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/);
 versioning follows the convention described in
-[CONTRIBUTING.md](CONTRIBUTING.md#versioning) (semver-for-0.x pre-1.0).
+[CONTRIBUTING.md](CONTRIBUTING.md#versioning) (semver).
+
+## [1.1.0] — 2026-07-12
+
+### Changed
+
+- **Idle-session eviction TTL lowered 15 min → 2 min for benign states**
+  (`SESSION_TTL_S` 900 s → 120 s). This is the reaper for sessions that vanished
+  *without* a clean `end` event: a hard kill (closing the terminal, `kill`,
+  force-quit) terminates the harness before its `SessionEnd`/`end` hook can run,
+  so the broker never hears "Offline" and the session used to linger on the ring
+  for a full 15 minutes. A **graceful** exit (`/exit`, Ctrl-D) still frees the
+  segment instantly via the hook — this TTL only catches the abrupt-kill case.
+  Trade-off: a genuinely idle-but-alive session (no events, but not dead) is now
+  also dropped after 2 min and reappears on its next activity — the right
+  behavior for a glance-light.
+- **Call-to-action states are exempt from the short TTL.** A session parked in
+  `AwaitingApproval` / `WaitingInput` / `Error` fires one event then goes quiet
+  *while it waits on you*, so a state-blind reaper would hide the ring's most
+  important "needs you" signal after 2 min. Those states keep the original
+  **900 s** hold (`CTA_TTL_S`), never shorter than the benign window — a job
+  blocked on you can't silently disappear. (A session killed *while* awaiting
+  approval therefore lingers up to 15 min — the safe direction.)
+- The stale-session sweep interval is now **adaptive** — it tracks the benign
+  TTL (¼ of it, floored at 5 s, capped at the previous 60 s) so a shorter TTL
+  actually takes effect promptly instead of waiting up to a minute for the next
+  sweep.
+
+### Added
+
+- **`nimbus-notify-broker --ttl SECONDS`** — override the benign idle-session
+  eviction TTL (default 120, floored at 5). Lower it for a snappier ring; raise
+  it to keep quiet-but-alive sessions on the ring longer. Call-to-action states
+  always hold 900 s regardless.
 
 ## [1.0.0] — 2026-07-12
 
