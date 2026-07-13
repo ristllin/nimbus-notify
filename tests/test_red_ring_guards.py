@@ -42,14 +42,33 @@ def test_cta_ttl_matches_device_hold():
 
 
 def test_dead_pid_session_evicted_on_sweep():
+    # A REAL process that is alive at registration (pid_alive_seen latches) and
+    # then dies -> evicted on the next sweep. (A never-seen-alive pid must NOT
+    # evict — see test_foreign_namespace_pid_never_evicted.)
+    import subprocess, time
     b, t = _mk()
-    # PID 2**22+5 is far above any real pid on macOS/Linux test hosts.
-    b.handle_event(_ev("s1", "error", pid=(1 << 22) + 5))
-    assert len(b._allocator.active_segments()) == 1
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        b.handle_event(_ev("s1", "error", pid=child.pid))
+        assert b._allocator._sessions["s1"].pid_alive_seen is True
+        assert len(b._allocator.active_segments()) == 1
+    finally:
+        child.kill(); child.wait()                        # now genuinely dead
     frames_before = len(t.sent)
     b._sweep_once()
-    assert b._allocator.active_segments() == []          # evicted immediately
+    assert b._allocator.active_segments() == []           # evicted immediately
     assert len(t.sent) > frames_before                    # and a frame announced it
+
+
+def test_foreign_namespace_pid_never_evicted():
+    # A containerized harness reports a pid that does not exist host-side. It was
+    # NEVER seen alive in our namespace -> pid eviction must not touch it (the
+    # TTLs still apply). Regression guard for the false-evict-every-sweep bug.
+    b, t = _mk()
+    b.handle_event(_ev("s1", "running", pid=(1 << 22) + 7))   # never alive here
+    assert b._allocator._sessions["s1"].pid_alive_seen is False
+    b._sweep_once()
+    assert len(b._allocator.active_segments()) == 1           # survives
 
 
 def test_live_pid_session_survives_sweep():

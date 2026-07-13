@@ -51,7 +51,7 @@ class SerialTransport:
             assert self._serial is not None
             self._serial.write(frame)
             return True
-        except serial.SerialException as exc:
+        except (serial.SerialException, serial.SerialTimeoutException) as exc:
             log.warning("serial write error: %s — will reconnect", exc)
             self._close()
             return False
@@ -78,6 +78,12 @@ class SerialTransport:
             s.port = port
             s.baudrate = self._baud
             s.timeout = 0.1
+            # Bounded WRITES too: the ~30 s snapshot heartbeat writes from the
+            # asyncio loop thread under broker._lock — an unbounded write() on a
+            # wedged CDC device would freeze the whole broker (loop + hooks +
+            # watcher). A timeout surfaces as SerialTimeoutException, handled
+            # like any serial error: close + reconnect next send.
+            s.write_timeout = 2.0
             s.dtr = False
             s.rts = False
             # exclusive: a second broker (or any process) must NOT share this
@@ -89,7 +95,7 @@ class SerialTransport:
             self._port   = port
             log.info("serial connected: %s @ %d", port, self._baud)
             return True
-        except serial.SerialException as exc:
+        except (serial.SerialException, serial.SerialTimeoutException) as exc:
             log.debug("serial open failed (%s): %s", port, exc)
             self._serial = None
             return False

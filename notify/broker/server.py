@@ -93,6 +93,14 @@ class Broker:
                 rec = SessionRecord(session_id=session_id, harness=harness,
                                     cwd=cwd, state=state,
                                     pid=int(msg.get("pid") or 0))
+                if rec.pid:
+                    try:
+                        os.kill(rec.pid, 0)
+                        rec.pid_alive_seen = True     # exists in OUR namespace
+                    except PermissionError:
+                        rec.pid_alive_seen = True     # alive, not ours
+                    except (ProcessLookupError, OSError):
+                        pass                          # container/foreign pid: never evict by pid
                 if session_id not in self._allocator._index:
                     self._allocator.register(rec)
                 else:
@@ -184,7 +192,10 @@ class Broker:
                 # instead of holding a stale (often red) segment for the CTA TTL.
                 dead = []
                 for rec in self._allocator.active_segments():
-                    if rec.pid:
+                    # Only pids we ONCE saw alive in our own namespace qualify —
+                    # a containerized harness's pid never resolves host-side and
+                    # used to false-evict the live session every sweep.
+                    if rec.pid and rec.pid_alive_seen:
                         try:
                             os.kill(rec.pid, 0)
                         except ProcessLookupError:

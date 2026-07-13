@@ -60,6 +60,11 @@ class SessionRecord:
     state:      State = State.Idle
     segment:    int   = -1    # assigned by SegmentAllocator; -1 = unassigned
     pid:        int   = 0     # harness process id (led-report --pid); 0 = unknown.
+    pid_alive_seen: bool = False  # pid was observed ALIVE at least once IN OUR PID
+                              # namespace. Dead-pid eviction requires this: a hook
+                              # inside a container reports a pid that never exists
+                              # host-side — without the flag such LIVE sessions were
+                              # evicted every sweep (review finding 2026-07-13).
                               # Lets the broker LIVENESS-CHECK a session: a dead pid
                               # is evicted on the next sweep instead of holding its
                               # (possibly red) segment for the full CTA TTL.
