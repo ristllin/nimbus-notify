@@ -80,6 +80,10 @@ class SerialTransport:
             s.timeout = 0.1
             s.dtr = False
             s.rts = False
+            # exclusive: a second broker (or any process) must NOT share this
+            # port — interleaved writes corrupt frames (CRC drops) and were part
+            # of the owner's stuck-red-ring class 3 (two brokers fighting).
+            s.exclusive = True
             s.open()
             self._serial = s
             self._port   = port

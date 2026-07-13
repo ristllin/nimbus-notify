@@ -55,6 +55,7 @@ class Broker:
         # start/end + HITL inference).  Serialize so the allocator/seq/frame
         # push can't interleave.
         self._lock = threading.Lock()
+        self._hb_was_active = False   # heartbeat: table had sessions last sweep
         # Wired by _run() once the watcher exists; the broker feeds it the
         # before_tool/after_tool timing for its stalled-HITL heuristic (Vibe
         # exposes no approval hook — see notify/harness/vibe.py).
@@ -90,11 +91,14 @@ class Broker:
                 self._allocator.free(session_id)
             else:
                 rec = SessionRecord(session_id=session_id, harness=harness,
-                                    cwd=cwd, state=state)
+                                    cwd=cwd, state=state,
+                                    pid=int(msg.get("pid") or 0))
                 if session_id not in self._allocator._index:
                     self._allocator.register(rec)
                 else:
                     self._allocator.update(rec)
+                    if rec.pid:   # refresh liveness identity on every event
+                        self._allocator._sessions[session_id].pid = rec.pid
 
             self._push_frame()
 
@@ -164,12 +168,47 @@ class Broker:
     async def _ttl_loop(self) -> None:
         while True:
             await asyncio.sleep(self._ttl_check)
+            self._sweep_once()
+
+    def _sweep_once(self) -> None:
+        """One eviction+heartbeat sweep (sync; extracted so tests can drive it)."""
+        if True:
             with self._lock:
+                # Dead-process eviction (owner red-ring fix): a session whose
+                # harness pid is gone can never send its clean 'end' — evict it NOW
+                # instead of holding a stale (often red) segment for the CTA TTL.
+                dead = []
+                for rec in self._allocator.active_segments():
+                    if rec.pid:
+                        try:
+                            os.kill(rec.pid, 0)
+                        except ProcessLookupError:
+                            dead.append(rec.session_id)
+                        except PermissionError:
+                            pass  # alive, not ours
+                for sid in dead:
+                    self._allocator.free(sid)
+                if dead:
+                    log.info("evicted dead-pid sessions: %s", dead)
+
                 evicted = self._allocator.evict_stale(self._ttl, self._cta_ttl)
                 if evicted:
                     log.info("evicted stale sessions (ttl=%.0fs/cta=%.0fs): %s",
                              self._ttl, self._cta_ttl, evicted)
+
+                # SNAPSHOT HEARTBEAT (owner red-ring fix): frames are fire-and-
+                # forget full snapshots — one dropped BLE/serial frame used to
+                # strand a stale (often red) ring until device timers caught it.
+                # Re-pushing the current snapshot every sweep (~ttl_check cadence)
+                # makes the link self-healing: a dropped clear or missed update is
+                # corrected within one sweep. Push while sessions are active, on
+                # any eviction, plus ONE trailing frame when the table just went
+                # empty (so the device gets the all-clear even if the eviction
+                # frame itself is lost — the next sweep re-sends it).
+                active_now = bool(self._allocator.active_segments())
+                if active_now or dead or evicted or self._hb_was_active:
                     self._push_frame()
+                self._hb_was_active = active_now
 
 
 # ------------------------------------------------------------------
@@ -221,6 +260,18 @@ async def _handle_client(broker: Broker,
         writer.close()
 
 
+def _socket_alive(path) -> bool:
+    """True if a live broker currently accepts connections on the unix socket."""
+    import socket as _socket
+    try:
+        with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.5)
+            probe.connect(str(path))
+            return True
+    except OSError:
+        return False
+
+
 async def _run(port: str | None = None,
                transport_kind: str = "serial",
                ble_address: str | None = None,
@@ -245,8 +296,19 @@ async def _run(port: str | None = None,
     vibe_watcher.start()
 
     SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # SINGLETON GUARD (owner red-ring fix, class 3): a second broker used to
+    # silently STEAL the socket — hooks (incl. the SessionEnd that clears a red
+    # segment) then reached the new broker while the old one kept re-painting
+    # its stale table over the shared transport. If a live broker answers on
+    # the socket, refuse to start with a clear message instead.
     if SOCKET_PATH.exists():
-        SOCKET_PATH.unlink()
+        if _socket_alive(SOCKET_PATH):
+            log.error("another nimbus-notify broker is already running on %s — "
+                      "refusing to start a second one (it would corrupt the "
+                      "device link). Stop it first (launchctl/systemctl or "
+                      "pkill -f nimbus-notify-broker).", SOCKET_PATH)
+            raise SystemExit(2)
+        SOCKET_PATH.unlink()   # dead leftover socket from a crashed broker
 
     server = await asyncio.start_unix_server(
         lambda r, w: _handle_client(broker, r, w),

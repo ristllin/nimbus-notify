@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "led-report claude start",
+            "command": "led-report claude start --pid $PPID",
             "async": true
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "led-report claude running",
+            "command": "led-report claude running --pid $PPID",
             "async": true
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "led-report claude running",
+            "command": "led-report claude running --pid $PPID",
             "async": true
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "led-report claude notify",
+            "command": "led-report claude notify --pid $PPID",
             "async": true
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "led-report claude done",
+            "command": "led-report claude done --pid $PPID",
             "async": true
           }
         ]
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "led-report claude error",
+            "command": "led-report claude error --pid $PPID",
             "async": true
           }
         ]
@@ -74,7 +74,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "led-report claude end",
+            "command": "led-report claude end --pid $PPID",
             "async": true
           }
         ]

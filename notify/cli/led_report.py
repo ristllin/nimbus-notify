@@ -38,6 +38,19 @@ def _send(payload: dict) -> None:
 
 def main() -> None:
     args = sys.argv[1:]
+    # Optional --pid <n>: the HARNESS process id, passed by hooks as `--pid $PPID`
+    # (the hook shell's parent = the agent process). Lets the broker liveness-check
+    # a session and evict it the moment the process dies, instead of holding a
+    # stale (often red) segment for the full CTA TTL. Stripped before positional
+    # parsing; omitted silently when absent (older hook configs keep working).
+    pid = 0
+    if "--pid" in args:
+        i = args.index("--pid")
+        try:
+            pid = int(args[i + 1])
+        except (IndexError, ValueError):
+            pid = 0
+        del args[i:i + 2]
     if len(args) < 2:
         print("usage: led-report <harness> <verb>  [or]  led-report codex-notify '<json>'",
               file=sys.stderr)
@@ -92,5 +105,7 @@ def main() -> None:
     }
     if event.notification_type:
         payload["notification_type"] = event.notification_type
+    if pid:
+        payload["pid"] = pid
 
     _send(payload)

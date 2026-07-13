@@ -38,7 +38,9 @@ from notify.state import State
 #     to over-show a pending job than to hide a live one). Never shorter than
 #     the benign window (the broker clamps: max(benign_ttl, CTA_TTL_S)).
 SESSION_TTL_S = 120.0
-CTA_TTL_S     = 900.0
+CTA_TTL_S     = 300.0   # was 900; owner red-ring round 2026-07-13 — matches the
+                        # device's 5-min attention hold, and dead-PID eviction now
+                        # clears killed sessions far sooner anyway
 
 # States that mean "a human needs to act" (or a failure worth surfacing). Held
 # on the ring for CTA_TTL_S, not the short SESSION_TTL_S. Mirrors the firmware's
@@ -57,6 +59,10 @@ class SessionRecord:
     cwd:        str
     state:      State = State.Idle
     segment:    int   = -1    # assigned by SegmentAllocator; -1 = unassigned
+    pid:        int   = 0     # harness process id (led-report --pid); 0 = unknown.
+                              # Lets the broker LIVENESS-CHECK a session: a dead pid
+                              # is evicted on the next sweep instead of holding its
+                              # (possibly red) segment for the full CTA TTL.
     last_event: float = field(default_factory=time.monotonic)
 
     def touch(self) -> None:
