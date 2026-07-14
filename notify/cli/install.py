@@ -183,11 +183,98 @@ def install_codex(dry_run: bool) -> None:
     print("   SECOND, duplicate ring segment every turn. hooks.json already covers Codex.)\n")
 
 
+VIBE_HOOKS_TOML = """\
+[[hooks]]
+name    = "ns-before-tool"
+type    = "before_tool"
+match   = "*"
+command = "led-report vibe before_tool"
+timeout = 5.0
+
+[[hooks]]
+name    = "ns-after-tool"
+type    = "after_tool"
+match   = "*"
+command = "led-report vibe after_tool"
+timeout = 5.0
+
+[[hooks]]
+name    = "ns-post-turn"
+type    = "post_agent_turn"
+command = "led-report vibe post_agent_turn"
+timeout = 5.0
+"""
+
+_VIBE_FLAG = "enable_experimental_hooks = true"
+_VIBE_SENTINEL = "led-report vibe"
+
+
+def _insert_vibe_flag(text: str) -> str:
+    """Prepend `enable_experimental_hooks = true` before the first [section] header.
+    If there are no section headers, append to end. Idempotent."""
+    if _VIBE_FLAG in text:
+        return text
+    for i, line in enumerate(text.splitlines(keepends=True)):
+        if line.startswith("["):
+            lines = text.splitlines(keepends=True)
+            lines.insert(i, _VIBE_FLAG + "\n")
+            return "".join(lines)
+    return text.rstrip("\n") + ("\n" if text else "") + _VIBE_FLAG + "\n"
+
+
+def _write_vibe_hooks(path: Path, dry_run: bool) -> bool:
+    """Append our [[hooks]] blocks to ~/.vibe/hooks.toml; idempotent, dry-run aware.
+    Returns True if a write happened (or would under --dry-run)."""
+    existing = path.read_text() if path.exists() else ""
+    if _VIBE_SENTINEL in existing:
+        print(f"  = {path}: already wired.")
+        return False
+    after = existing.rstrip("\n") + ("\n\n" if existing else "") + VIBE_HOOKS_TOML
+    print(f"  + {path}: appending ns-before-tool, ns-after-tool, ns-post-turn")
+    if dry_run:
+        import difflib
+        diff = difflib.unified_diff(existing.splitlines(), after.splitlines(),
+                                    fromfile=str(path), tofile=str(path) + " (new)", lineterm="")
+        print("\n".join("      " + ln for ln in diff))
+        return True
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        bak = path.with_suffix(path.suffix + ".bak")
+        bak.write_text(existing)
+        print(f"    (backed up -> {bak})")
+    path.write_text(after)
+    return True
+
+
+def _write_vibe_config_flag(path: Path, dry_run: bool) -> bool:
+    """Insert `enable_experimental_hooks = true` into ~/.vibe/config.toml.
+    Idempotent, dry-run aware. Returns True if a write happened (or would)."""
+    existing = path.read_text() if path.exists() else ""
+    if _VIBE_FLAG in existing:
+        print(f"  = {path}: flag already present.")
+        return False
+    after = _insert_vibe_flag(existing)
+    print(f"  + {path}: inserting enable_experimental_hooks = true")
+    if dry_run:
+        import difflib
+        diff = difflib.unified_diff(existing.splitlines(), after.splitlines(),
+                                    fromfile=str(path), tofile=str(path) + " (new)", lineterm="")
+        print("\n".join("      " + ln for ln in diff))
+        return True
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        bak = path.with_suffix(path.suffix + ".bak")
+        bak.write_text(existing)
+        print(f"    (backed up -> {bak})")
+    path.write_text(after)
+    return True
+
+
 def install_vibe(dry_run: bool) -> None:
-    print("Mistral Vibe — paste into ~/.vibe/config.toml (needs Vibe v2.15.0+):\n")
-    print("    enable_experimental_hooks = true\n")
-    print("  and merge hooks/vibe/hooks.toml (before_tool/after_tool/post_agent_turn).")
-    print("  Vibe has no start/stop hook — the broker's session watcher supplies those.")
+    print("Mistral Vibe (~/.vibe/hooks.toml + ~/.vibe/config.toml):")
+    _write_vibe_hooks(Path.home() / ".vibe" / "hooks.toml", dry_run)
+    _write_vibe_config_flag(Path.home() / ".vibe" / "config.toml", dry_run)
+    print("  (Vibe has no start/stop hooks — the broker's VibeWatcher supplies those.)")
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +329,14 @@ def doctor() -> int:
     if not any_wired:
         print("  [warn] no harness has led-report hooks — run: nimbus-notify install-hooks")
         ok = False
+
+    vibe_cfg = Path.home() / ".vibe" / "config.toml"
+    if vibe_cfg.exists():
+        flag_set = _VIBE_FLAG in vibe_cfg.read_text()
+        print(f"  [{'ok' if flag_set else 'no'}]   vibe enable_experimental_hooks "
+              f"{'set' if flag_set else 'NOT set (hooks will not fire)'}: {vibe_cfg}")
+        if not flag_set:
+            ok = False
 
     print("-" * 20)
     print("All good — start a session and watch the device." if ok
