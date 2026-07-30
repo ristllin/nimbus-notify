@@ -5,6 +5,7 @@ with in-memory fakes and shrinks the module's timing constants so the worker
 thread's scan→connect→serve→backoff cycle runs in milliseconds."""
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -33,10 +34,12 @@ class FakeDevice:
 class Harness:
     """Installs fake bleak objects; records every client the worker creates."""
 
-    def __init__(self, monkeypatch, *, mtu=185, send_ack=True, device="scan"):
+    def __init__(self, monkeypatch, *, mtu=185, send_ack=True, device="scan",
+                 flap=False):
         self.clients  = []
         self.mtu      = mtu
         self.send_ack = send_ack
+        self.flap     = flap    # each session drops the instant it comes up
         self.device   = FakeDevice() if device == "scan" else device
         harness = self
 
@@ -60,6 +63,10 @@ class Harness:
                 self.notify_subs.append(uuid)
                 if harness.send_ack:
                     cb(None, bytearray([0x01, 1, 0, 1]))
+                if harness.flap:
+                    # Drop the instant we go 'established' — synthesize the macOS
+                    # CoreBluetooth wedge (connects, then dies within seconds).
+                    asyncio.get_running_loop().call_soon(self.drop)
 
             async def write_gatt_char(self, uuid, data, response=True):
                 self.writes.append((uuid, bytes(data), response))
@@ -93,8 +100,8 @@ class Harness:
 def transport_factory(monkeypatch):
     created = []
 
-    def make(harness, address=None):
-        t = ble.BleTransport(device_address=address)
+    def make(harness, address=None, **kw):
+        t = ble.BleTransport(device_address=address, **kw)
         created.append(t)
         return t
 
@@ -268,6 +275,65 @@ def test_explicit_address_bypasses_scan(monkeypatch, transport_factory):
     wait_until(lambda: h.clients, msg="direct connect")
     assert h.clients[0].target == "cb-uuid-1234"
     wait_until(lambda: t._connected.is_set(), msg="connect")
+
+
+def test_flap_recycles_process_when_supervised(monkeypatch, transport_factory):
+    # A process-level CoreBluetooth wedge makes every session come up then drop
+    # within seconds. After FLAP_MAX_CYCLES such flaps in the window, self-heal
+    # must fire the restart hook (in production: os._exit → supervisor respawn).
+    monkeypatch.setattr(ble, "FLAP_MAX_CYCLES", 3)
+    h = Harness(monkeypatch, flap=True)
+    restarts = {"n": 0}
+    t = transport_factory(h, self_heal=True,
+                          restart_hook=lambda: restarts.__setitem__("n", restarts["n"] + 1))
+    wait_until(lambda: restarts["n"] == 1, msg="self-heal restart fired")
+    assert len(h.clients) >= 3          # it really did flap several sessions
+    wait_until(lambda: not t._thread.is_alive(), msg="worker loop stopped after restart")
+
+
+def test_flap_warns_but_keeps_running_when_unsupervised(monkeypatch, transport_factory):
+    # Not supervised (e.g. a foreground bootstrap run): exiting would just kill
+    # the only transport, so self-heal must NOT fire — warn, reset, keep trying.
+    monkeypatch.setattr(ble, "FLAP_MAX_CYCLES", 3)
+    h = Harness(monkeypatch, flap=True)
+    restarts = {"n": 0}
+    t = transport_factory(h, self_heal=False,
+                          restart_hook=lambda: restarts.__setitem__("n", restarts["n"] + 1))
+    wait_until(lambda: len(h.clients) >= 6, msg="kept reconnecting past the threshold")
+    assert restarts["n"] == 0           # never recycled
+    assert t._thread.is_alive()         # still trying
+
+
+def test_occasional_drop_does_not_trip_watchdog(monkeypatch, transport_factory):
+    # A single clean drop + reconnect is normal operation, not a flap — the
+    # watchdog must not recycle the process for it.
+    monkeypatch.setattr(ble, "FLAP_MAX_CYCLES", 3)
+    h = Harness(monkeypatch)
+    restarts = {"n": 0}
+    t = transport_factory(h, self_heal=True,
+                          restart_hook=lambda: restarts.__setitem__("n", restarts["n"] + 1))
+    wait_until(lambda: t._connected.is_set(), msg="first connect")
+    t.send(FRAME)
+    wait_until(lambda: h.clients[0].writes, msg="first write")
+    h.clients[0].drop()                              # one drop
+    wait_until(lambda: len(h.clients) >= 2 and h.clients[1].writes, msg="reconnect")
+    wait_until(lambda: t._connected.is_set(), msg="reconnected and stable")
+    time.sleep(0.1)
+    assert restarts["n"] == 0                        # one drop never trips it
+    assert len(t._flaps) <= 1
+
+
+def test_under_supervisor_detects_launchd_and_systemd(monkeypatch):
+    for var in ("XPC_SERVICE_NAME", "INVOCATION_ID", "NOTIFY_SOCKET"):
+        monkeypatch.delenv(var, raising=False)
+    assert ble._under_supervisor() is False
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")      # plain interactive shell
+    assert ble._under_supervisor() is False
+    monkeypatch.setenv("XPC_SERVICE_NAME", "com.nimbus-notify.broker")  # launchd
+    assert ble._under_supervisor() is True
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+    monkeypatch.setenv("INVOCATION_ID", "abc123")    # systemd unit
+    assert ble._under_supervisor() is True
 
 
 def test_close_joins_worker(monkeypatch):
