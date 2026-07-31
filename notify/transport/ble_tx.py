@@ -30,12 +30,23 @@ is currently connected — the same best-effort "delivered" semantics as
 SerialTransport.  On every (re)connect the worker re-enables the STATUS CCCD
 (forgetting this is the classic "device acks nothing after reconnect" bug)
 and re-sends the current frame in full.
+
+Self-heal: macOS CoreBluetooth can wedge at the process level so the reconnect
+loop flaps (connect → no ack → drop within seconds) forever; a fresh BleakClient
+can't fix it, only a fresh PROCESS can.  When the worker sees too many
+established-then-immediately-dropped sessions in a window it exits (when running
+under a KeepAlive supervisor) so the process is respawned clean — see the
+FLAP_* constants and _note_flap().
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
+import time
+from collections import deque
+from typing import Callable
 
 from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
@@ -69,6 +80,40 @@ BACKOFF_CAP_S     = 10.0
 CLOSE_TIMEOUT_S   = 5.0
 PAIRING_RETRY_S   = 2.0   # re-drive the current frame while waiting for pairing
 
+# --- Self-heal watchdog ------------------------------------------------------
+# macOS CoreBluetooth can wedge at the PROCESS level: the CBCentralManager that
+# bleak shares across the whole process gets into a state where the peripheral
+# connects but the GATT session is dead (no conn ack, then a drop within
+# seconds), and it flaps like that indefinitely.  The in-process reconnect loop
+# below already makes a fresh BleakClient/BleakScanner every cycle, so it CANNOT
+# clear this — only a fresh PROCESS resets CoreBluetooth.  When we detect the
+# flap (too many established-then-immediately-dropped sessions in a window) we
+# exit so a KeepAlive supervisor (macOS launchd / systemd --user) respawns a
+# clean process — automating the manual `launchctl kickstart -k`.  Off (warn
+# only) when not supervised, so a foreground bootstrap run is never killed.
+FLAP_SESSION_MIN_S = 20.0    # an established session shorter than this is a "flap"
+FLAP_WINDOW_S      = 180.0   # rolling window over which flaps are counted
+FLAP_MAX_CYCLES    = 5       # this many flaps in the window => wedged => recycle
+RESTART_EXIT_CODE  = 75      # EX_TEMPFAIL: nonzero; a KeepAlive supervisor respawns
+
+
+def _under_supervisor() -> bool:
+    """True when a respawn-on-exit supervisor manages us, so exiting triggers a
+    clean restart rather than just dying.  macOS launchd sets XPC_SERVICE_NAME to
+    the job label ('0' in a plain interactive shell); systemd sets INVOCATION_ID
+    / NOTIFY_SOCKET."""
+    xpc = os.environ.get("XPC_SERVICE_NAME", "")
+    if xpc and xpc != "0":
+        return True
+    return bool(os.environ.get("INVOCATION_ID") or os.environ.get("NOTIFY_SOCKET"))
+
+
+def _supervised_restart() -> None:
+    """Exit the whole process so the supervisor respawns a clean CoreBluetooth
+    stack.  os._exit (not sys.exit): we run on a daemon worker thread and want an
+    immediate, un-catchable whole-process exit."""
+    os._exit(RESTART_EXIT_CODE)
+
 
 def _is_encryption_error(exc: Exception) -> bool:
     """True if a GATT write failed because the link isn't paired/encrypted.
@@ -90,7 +135,14 @@ class BleTransport:
     """BLE GATT central transport (same public shape as SerialTransport)."""
 
     def __init__(self, device_address: str | None = None,
-                 device_name: str | None = None) -> None:
+                 device_name: str | None = None, *,
+                 self_heal: bool | None = None,
+                 restart_hook: Callable[[], None] | None = None) -> None:
+        # Self-heal: on a flap loop, recycle the process (supervisor respawns).
+        # None → auto (on iff supervised).  restart_hook is injectable for tests.
+        self._self_heal = _under_supervisor() if self_heal is None else self_heal
+        self._restart   = restart_hook or _supervised_restart
+        self._flaps: deque[float] = deque()   # monotonic ends of short sessions
         # macOS: CoreBluetooth UUID, NOT a MAC.  None → scan by service UUID.
         self._address = device_address
         # Exact advertised-name filter. When set, ONLY a peripheral whose name
@@ -173,6 +225,7 @@ class BleTransport:
         backoff = BACKOFF_INITIAL_S
         while not self._stop.is_set():
             self._established = False
+            started = time.monotonic()
             try:
                 target = self._address or await self._find_device()
                 if target is None:
@@ -184,9 +237,40 @@ class BleTransport:
             if self._stop.is_set():
                 break
             if self._established:
+                # A session that came up then dropped almost immediately is a
+                # flap, not a normal drop; enough of them means the process's
+                # CoreBluetooth is wedged and only a respawn clears it.
+                if (time.monotonic() - started < FLAP_SESSION_MIN_S
+                        and self._note_flap()):
+                    return
                 backoff = BACKOFF_INITIAL_S   # fresh drop: retry quickly
             await self._sleep(backoff)
             backoff = min(backoff * 2.0, BACKOFF_CAP_S)
+
+    def _note_flap(self) -> bool:
+        """Record one short (established-then-dropped) session and decide whether
+        the flap threshold has tripped.  Returns True only when the worker loop
+        should stop (self-heal fired the restart hook).  When self-heal is off we
+        warn, reset the counter, and keep trying (never kill the sole transport)."""
+        now = time.monotonic()
+        self._flaps.append(now)
+        while self._flaps and now - self._flaps[0] > FLAP_WINDOW_S:
+            self._flaps.popleft()
+        if len(self._flaps) < FLAP_MAX_CYCLES:
+            return False
+        if self._self_heal:
+            log.error("BLE link flapping (%d sessions < %.0fs each within %.0fs) "
+                      "— recycling the process so the supervisor respawns a clean "
+                      "CoreBluetooth stack", len(self._flaps),
+                      FLAP_SESSION_MIN_S, FLAP_WINDOW_S)
+            self._restart()   # os._exit in production; a mock returns in tests
+            return True
+        log.error("BLE link flapping (%d sessions within %.0fs) and self-heal is "
+                  "off — restart the broker manually to reset CoreBluetooth: "
+                  "launchctl kickstart -k gui/$(id -u)/com.nimbus-notify.broker",
+                  len(self._flaps), FLAP_WINDOW_S)
+        self._flaps.clear()   # warn again only after a fresh burst; keep running
+        return False
 
     async def _find_device(self):
         """Scan for the target peripheral. With an explicit name filter, require
