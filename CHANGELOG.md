@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.0 (2026-07-31)
+
+Reliability for the BLE link and a real Vibe installer.
+
+### Added
+
+- **BLE self-heal watchdog.** macOS CoreBluetooth can wedge at the process level so
+  the ring link flaps (connect → no ack → drop within seconds) indefinitely — a fresh
+  `BleakClient` can't fix it, only a fresh process can. The broker now counts
+  established-then-immediately-dropped sessions in a rolling window and, when it detects
+  that flap under a KeepAlive supervisor (launchd / systemd `--user`), recycles the
+  process so it respawns a clean CoreBluetooth stack — automating the manual
+  `launchctl kickstart -k`. When it isn't supervised (a foreground first-bond run), it
+  warns with the manual-restart hint and keeps trying, so the only transport is never
+  killed. (#2)
+- **`nimbus-notify install-hooks --harness vibe` now writes the config** instead of only
+  printing paste instructions, matching the Claude and Codex paths. It appends the three
+  `[[hooks]]` blocks to `~/.vibe/hooks.toml` and inserts `enable_experimental_hooks = true`
+  into `~/.vibe/config.toml` — both idempotent, backed up to `.bak`, and `--dry-run` aware.
+  `nimbus-notify doctor` now flags a missing `enable_experimental_hooks` (without it Vibe
+  silently ignores every hook). (#1)
+
 ## 1.3.1 (2026-07-15)
 
 Reliability round from a scoped UX audit of the session→ring pipeline.
