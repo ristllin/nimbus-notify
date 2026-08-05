@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`nimbus-notify status`** — a live "is the device connected, and which one?"
+  query. The broker socket previously only ingested fire-and-forget events; it now
+  also answers `{"cmd": "status"}` with the transport link state (connected? which
+  BLE name / serial port? MTU) plus the active sessions. The CLI prints a one-line
+  summary and its exit code doubles as a scriptable health check (0 = connected,
+  1 = broker not running, 2 = broker up but no link). Backed by a new `status()`
+  method on the transport seam (BLE + serial).
+
 ## 1.4.0 (2026-07-31)
 
 Reliability for the BLE link and a real Vibe installer.

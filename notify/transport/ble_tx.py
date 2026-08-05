@@ -195,6 +195,19 @@ class BleTransport:
         if self._thread.is_alive():
             log.warning("BLE worker did not stop within %.1fs", CLOSE_TIMEOUT_S)
 
+    def status(self) -> dict:
+        """Link snapshot for `nimbus-notify status`. Read from the socket-handler
+        thread while the worker thread mutates these — all plain reads of an
+        Event/ints, so best-effort is fine; never blocks, never raises."""
+        return {
+            "kind": "ble",
+            "connected": self._connected.is_set(),
+            "name": self._name,
+            "address": self._address,
+            "mtu": self._mtu,
+            "established": self._established,
+        }
+
     # ------------------------------------------------------------------
     # Worker thread — private asyncio loop
     # ------------------------------------------------------------------

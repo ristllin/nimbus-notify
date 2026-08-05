@@ -19,3 +19,11 @@ class Transport(Protocol):
 
     def close(self) -> None:
         ...
+
+    def status(self) -> dict:
+        """A JSON-serializable snapshot of the link for `nimbus-notify status`.
+
+        Always carries a `kind` ("ble"/"serial") and a `connected` bool; the rest
+        is transport-specific (ble: name/address/mtu, serial: port/baud). Read
+        best-effort from another thread — never blocks, never raises."""
+        ...

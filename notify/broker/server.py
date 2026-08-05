@@ -165,20 +165,38 @@ class Broker:
             log.exception("frame encode/send failed — dropping this frame")
         self._write_status(records)
 
+    @staticmethod
+    def _session_dicts(records: list) -> list:
+        """Shared JSON shape for a session list (status.json + the socket query)."""
+        return [
+            {
+                "session_id": r.session_id,
+                "harness":    r.harness,
+                "cwd":        r.cwd,
+                "state":      r.state.name,
+                "segment":    r.segment,
+            }
+            for r in records
+        ]
+
+    def status_snapshot(self) -> dict:
+        """Live broker state for the `nimbus-notify status` socket query: the
+        transport link (connected? which device?) plus the active sessions. Reads
+        are best-effort across threads — never blocks the asyncio loop."""
+        import time as _time
+        try:
+            transport = self._transport.status()
+        except Exception:  # pragma: no cover - a transport must never break status
+            transport = {"kind": "unknown", "connected": False}
+        with self._lock:
+            sessions = self._session_dicts(self._allocator.active_segments())
+        return {"ts": _time.time(), "transport": transport, "sessions": sessions}
+
     def _write_status(self, records: list) -> None:
         import time as _time
         status = {
             "ts": _time.time(),
-            "sessions": [
-                {
-                    "session_id": r.session_id,
-                    "harness":    r.harness,
-                    "cwd":        r.cwd,
-                    "state":      r.state.name,
-                    "segment":    r.segment,
-                }
-                for r in records
-            ],
+            "sessions": self._session_dicts(records),
         }
         path = SOCKET_PATH.parent / "status.json"
         # Ensure the state dir exists even if _run() never created it — a frame
@@ -291,8 +309,14 @@ async def _handle_client(broker: Broker,
     try:
         data = await asyncio.wait_for(reader.readline(), timeout=2.0)
         msg  = json.loads(data.decode())
-        broker.handle_event(msg)
-        writer.write(b"ok\n")
+        # Query path: `{"cmd": "status"}` asks the broker to REPORT (is the device
+        # connected? which one?) instead of ingesting an event. Events never carry
+        # a "cmd" key, so this can't collide with a real led-report payload.
+        if msg.get("cmd") == "status":
+            writer.write((json.dumps(broker.status_snapshot()) + "\n").encode())
+        else:
+            broker.handle_event(msg)
+            writer.write(b"ok\n")
         await writer.drain()
     except (json.JSONDecodeError, asyncio.TimeoutError, OSError) as exc:
         log.debug("client error: %s", exc)
