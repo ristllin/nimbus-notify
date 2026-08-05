@@ -22,6 +22,8 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import os
+import socket
 import sys
 from pathlib import Path
 
@@ -290,6 +292,68 @@ def _hooks_wired(path: Path, harness: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# status — ask the running broker whether the device is connected
+# ---------------------------------------------------------------------------
+
+def _query_broker_status(timeout: float = 2.0) -> dict | None:
+    """Ask the running broker for a live status snapshot over its Unix socket.
+    Returns the parsed dict, or None if the broker isn't reachable / didn't
+    answer. Mirrors led-report's fire-and-forget connect, but reads one line back."""
+    from notify.broker.server import SOCKET_PATH
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(str(SOCKET_PATH))
+            sock.sendall(b'{"cmd": "status"}\n')
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+    except OSError:
+        return None
+    try:
+        return json.loads(buf.decode())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def status() -> int:
+    """`nimbus-notify status` — is the device connected, and which one?
+
+    Exit code doubles as a scriptable health check:
+      0 = device connected, 1 = broker not running, 2 = broker up but no link."""
+    snap = _query_broker_status()
+    if snap is None:
+        print("broker not running (no reply on its socket).\n"
+              "  start it:  nimbus-notify-broker --transport ble --ble-name <Name>"
+              "   (or --transport serial)")
+        return 1
+
+    t    = snap.get("transport", {})
+    kind = t.get("kind", "unknown")
+    conn = bool(t.get("connected"))
+    dot  = "connected" if conn else "NOT connected"
+    if kind == "ble":
+        who   = t.get("name") or t.get("address") or "(any Nimbus)"
+        extra = f"  mtu={t.get('mtu', 0)}" if conn else ""
+        print(f"transport: ble -> {who}   {dot}{extra}")
+    elif kind == "serial":
+        print(f"transport: serial -> {t.get('port') or '(auto)'} @ {t.get('baud')}   {dot}")
+    else:
+        print(f"transport: {kind}   {dot}")
+
+    sessions = snap.get("sessions", [])
+    print(f"sessions: {len(sessions)}")
+    for s in sessions:
+        base = os.path.basename((s.get("cwd") or "").rstrip("/")) or "?"
+        print(f"  - {s.get('harness','?')} {base}: {s.get('state','?')} "
+              f"(seg {s.get('segment')})")
+    return 0 if conn else 2
+
+
 def doctor() -> int:
     print("nimbus-notify doctor\n" + "-" * 20)
     ok = True
@@ -358,10 +422,13 @@ def main(argv=None) -> int:
     ih.add_argument("--dry-run", action="store_true", help="print the changes, write nothing")
 
     sub.add_parser("doctor", help="check broker + hooks + device")
+    sub.add_parser("status", help="is the device connected right now, and which one?")
 
     args = p.parse_args(argv)
     if args.cmd == "doctor":
         return doctor()
+    if args.cmd == "status":
+        return status()
     if args.cmd == "install-hooks":
         which = args.harness
         if which in ("claude", "all"):

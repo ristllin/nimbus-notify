@@ -59,6 +59,16 @@ class SerialTransport:
     def close(self) -> None:
         self._close()
 
+    def status(self) -> dict:
+        """Link snapshot for `nimbus-notify status`. Best-effort, never raises."""
+        s = self._serial
+        return {
+            "kind": "serial",
+            "connected": bool(s and s.is_open),
+            "port": self._port,
+            "baud": self._baud,
+        }
+
     # ------------------------------------------------------------------
 
     def _ensure_open(self) -> bool:
