@@ -92,7 +92,7 @@ The broker ships two transports; a device only needs to implement one:
   |---|---|---|---|
   | FRAME  | Write Without Response | host → device | one complete nsn packet per write (≤71 bytes), byte-identical to the serial stream — no chunking |
   | STATUS | Notify | device → host | `[0x01, protoVer, verMaj, verMin]` connection ack; `[0x02, seq]` sequence echo after a frame is applied |
-  | CONFIG | Read | device → host | `[ver, ledCount, brightness, flags]` diagnostic snapshot |
+  | CONFIG | Read (encrypted, bonded) | device → host | `[ver, ledCount, brightness, flags]` diagnostic snapshot; also the broker's liveness probe |
 
   Required ATT MTU is **≥ 74 bytes** (71-byte packet + 3-byte ATT header) —
   a device or central that can't negotiate this cannot carry a full-size

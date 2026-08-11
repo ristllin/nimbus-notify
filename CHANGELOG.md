@@ -10,7 +10,21 @@
   BLE name / serial port? MTU) plus the active sessions. The CLI prints a one-line
   summary and its exit code doubles as a scriptable health check (0 = connected,
   1 = broker not running, 2 = broker up but no link). Backed by a new `status()`
-  method on the transport seam (BLE + serial).
+  method on the transport seam (BLE + serial). The BLE status now also reports
+  `last_rx_age_s` — seconds since the device last proved life.
+
+### Fixed
+
+- **BLE half-open link detection.** macOS CoreBluetooth can hold a link
+  "connected" after the peer silently vanishes (device reset / out of range)
+  without ever firing the disconnect callback — so the broker's serve loop waited
+  forever on a dead link, `status` kept saying "connected", and the ring stopped
+  updating (the observed multi-day silent wedge; the self-heal watchdog couldn't
+  see it because there was no flap). The broker now runs a timeout-bounded liveness
+  probe (a GATT read of CONFIG, which round-trips to the peer) while the link is
+  idle; a failed probe tears the session down so the normal reconnect runs, and a
+  permanently half-open stack feeds the same self-heal watchdog so the process
+  still recycles.
 
 ## 1.4.0 (2026-07-31)
 

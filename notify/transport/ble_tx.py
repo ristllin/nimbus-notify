@@ -13,8 +13,11 @@ GATT layout (one custom primary service):
                  [0x01, protoVer, fwMaj, fwMin]  conn ack ("link ready")
                  [0x02, seq]                     seq echo after a frame applies
                  [0x03, ...]                     reserved (button/encoder)
-  CONFIG_CHAR  — Read — [ver, ledCount, brightness, flags] diagnostic snapshot
-                 (Write reserved for v2; not consumed by the broker in v1).
+  CONFIG_CHAR  — Read (ENCRYPTED, bonded link required — like FRAME) —
+                 [ver, ledCount, brightness, flags] diagnostic snapshot (Write
+                 reserved for v2).  The broker reads it as a liveness probe (see
+                 _probe_alive); an unbonded-but-live link rejects the read with an
+                 encryption error, which still proves the peer is there.
 
 MTU: both sides target ATT_MTU 247; hard requirement is ≥74 (71-byte packet +
 3-byte ATT header).  macOS/CoreBluetooth negotiates automatically (typ. 185+);
@@ -37,6 +40,19 @@ can't fix it, only a fresh PROCESS can.  When the worker sees too many
 established-then-immediately-dropped sessions in a window it exits (when running
 under a KeepAlive supervisor) so the process is respawned clean — see the
 FLAP_* constants and _note_flap().
+
+Half-open detection: the OTHER CoreBluetooth failure mode is the opposite of a
+flap — the peer silently vanishes (device reset / out of range) but CoreBluetooth
+NEVER fires the disconnected callback, so the serve loop waits forever on a link
+that's actually dead.  There is no flap (the session never ends), so the watchdog
+above can't see it, and `status` keeps reporting "connected" (this is the observed
+multi-day silent wedge).  The fix is an active liveness probe: while idle, the
+worker periodically does a timeout-bounded GATT READ of CONFIG_CHAR — a read
+round-trips to the peer (CoreBluetooth doesn't cache it), so a timeout means the
+peer is really gone.  A failed probe tears the session down so the normal reconnect
+runs, and a probe-killed session is fed to _note_flap() too, so a genuinely wedged
+stack (every reconnect immediately half-open) still recycles.  See HEARTBEAT_* and
+_probe_alive().
 """
 from __future__ import annotations
 
@@ -79,6 +95,12 @@ BACKOFF_INITIAL_S = 0.5
 BACKOFF_CAP_S     = 10.0
 CLOSE_TIMEOUT_S   = 5.0
 PAIRING_RETRY_S   = 2.0   # re-drive the current frame while waiting for pairing
+
+# Half-open liveness probe (see the module docstring). While idle, verify the peer
+# is really still there — CoreBluetooth can hold a "connected" link after the
+# device vanished without ever firing the disconnected callback.
+HEARTBEAT_S         = 30.0   # probe cadence when the link is otherwise idle
+HEARTBEAT_TIMEOUT_S = 5.0    # a CONFIG read must round-trip within this, else dead
 
 # --- Self-heal watchdog ------------------------------------------------------
 # macOS CoreBluetooth can wedge at the PROCESS level: the CBCentralManager that
@@ -156,6 +178,8 @@ class BleTransport:
         self._connected   = threading.Event()
         self._stop        = threading.Event()
         self._established = False            # connected at least once this cycle
+        self._probe_dead  = False           # last session ended via a failed liveness probe
+        self._last_rx     = 0.0             # monotonic of the last device notification (proof of life)
         self._pairing_warned = False        # rate-limit the "pair first" hint
         self._retry_handle = None           # pending call_later that re-drives a frame while pairing
         self._mtu         = 0
@@ -199,6 +223,7 @@ class BleTransport:
         """Link snapshot for `nimbus-notify status`. Read from the socket-handler
         thread while the worker thread mutates these — all plain reads of an
         Event/ints, so best-effort is fine; never blocks, never raises."""
+        last_rx = self._last_rx
         return {
             "kind": "ble",
             "connected": self._connected.is_set(),
@@ -206,6 +231,9 @@ class BleTransport:
             "address": self._address,
             "mtu": self._mtu,
             "established": self._established,
+            # Seconds since the last proof-of-life from the device (conn ack / seq
+            # echo / liveness probe); None until the first one this process.
+            "last_rx_age_s": (time.monotonic() - last_rx) if last_rx else None,
         }
 
     # ------------------------------------------------------------------
@@ -238,6 +266,7 @@ class BleTransport:
         backoff = BACKOFF_INITIAL_S
         while not self._stop.is_set():
             self._established = False
+            self._probe_dead = False
             started = time.monotonic()
             try:
                 target = self._address or await self._find_device()
@@ -251,10 +280,13 @@ class BleTransport:
                 break
             if self._established:
                 # A session that came up then dropped almost immediately is a
-                # flap, not a normal drop; enough of them means the process's
-                # CoreBluetooth is wedged and only a respawn clears it.
-                if (time.monotonic() - started < FLAP_SESSION_MIN_S
-                        and self._note_flap()):
+                # flap; so is one the liveness probe had to kill (the peer went
+                # away silently). Either way, enough of them in the window means
+                # the process's CoreBluetooth is wedged and only a respawn clears
+                # it — feed both to the same watchdog.
+                unhealthy = (time.monotonic() - started < FLAP_SESSION_MIN_S
+                             or self._probe_dead)
+                if unhealthy and self._note_flap():
                     return
                 backoff = BACKOFF_INITIAL_S   # fresh drop: retry quickly
             await self._sleep(backoff)
@@ -349,13 +381,20 @@ class BleTransport:
                 pass
 
     async def _serve(self, client, disconnected: asyncio.Event) -> None:
-        """Steady state: wait for wake (new frame) or disconnect."""
+        """Steady state: wait for a new frame, a disconnect, or a heartbeat tick.
+
+        The heartbeat (HEARTBEAT_S) exists because macOS CoreBluetooth can hold a
+        link "connected" after the peer silently vanished, never firing the
+        `disconnected` callback — without it this loop would wait here forever on a
+        dead link (the observed multi-day silent wedge). On an idle tick we probe
+        the peer; a failed probe ends the session so _run reconnects."""
         assert self._wake is not None
         while not self._stop.is_set():
             wake_t = asyncio.ensure_future(self._wake.wait())
             disc_t = asyncio.ensure_future(disconnected.wait())
-            _, pending = await asyncio.wait({wake_t, disc_t},
-                                            return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait({wake_t, disc_t},
+                                               timeout=HEARTBEAT_S,
+                                               return_when=asyncio.FIRST_COMPLETED)
             for t in pending:
                 t.cancel()
             if pending:
@@ -363,10 +402,46 @@ class BleTransport:
             if disconnected.is_set():
                 log.info("BLE disconnected")
                 return
-            self._wake.clear()
             if self._stop.is_set():
                 return
+            if not done:
+                # Heartbeat tick (no new frame, no disconnect): verify the peer is
+                # actually still there. A dead half-open link ends the session.
+                if not await self._probe_alive(client):
+                    self._probe_dead = True
+                    return
+                continue
+            self._wake.clear()
             await self._write_current(client)
+
+    async def _probe_alive(self, client) -> bool:
+        """Active liveness check for a possibly half-open link.
+
+        A GATT READ round-trips to the peer (CoreBluetooth does not cache it), so a
+        timeout means the peer is really gone even though CoreBluetooth still calls
+        the link "connected". Returns True iff the peer answered — including the
+        "not bonded yet" rejection, which still proves it's there and serving ATT.
+        Skips the read when the device sent any STATUS notification within the last
+        HEARTBEAT_S (it just proved itself; no need to poke it)."""
+        if self._last_rx and time.monotonic() - self._last_rx < HEARTBEAT_S:
+            return True
+        try:
+            await asyncio.wait_for(client.read_gatt_char(CONFIG_CHAR_UUID),
+                                   HEARTBEAT_TIMEOUT_S)
+            self._last_rx = time.monotonic()
+            return True
+        except asyncio.TimeoutError:
+            log.warning("liveness probe timed out (%.1fs) — link is half-open, "
+                        "tearing down to reconnect", HEARTBEAT_TIMEOUT_S)
+            return False
+        except Exception as exc:
+            if _is_encryption_error(exc):
+                # CONFIG is READ_ENC: an unbonded-but-live link rejects the read,
+                # which still proves the peer is present and answering.
+                return True
+            log.warning("liveness probe failed (%s) — tearing down to reconnect",
+                        exc)
+            return False
 
     async def _write_current(self, client) -> None:
         """Write the mailbox frame: one whole nsn packet per WWR, no chunking."""
@@ -436,9 +511,14 @@ class BleTransport:
         return mtu
 
     def _on_status(self, _char, data: bytearray) -> None:
-        """STATUS notify callback (worker loop).  v1 logs; only ack is acted on."""
+        """STATUS notify callback (worker loop).  The conn ack gates the session;
+        every notification also refreshes the liveness-probe proof-of-life
+        timestamp; other tags are logged (v1)."""
         if not data:
             return
+        # Any notification from the device is proof of life — it lets the heartbeat
+        # skip its probe (the device already answered on its own).
+        self._last_rx = time.monotonic()
         tag = data[0]
         if tag == STATUS_CONN_ACK:
             log.debug("conn ack: %s", bytes(data).hex())
