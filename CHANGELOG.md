@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 (2026-08-12)
+
+Detect the silent half-open BLE link the flap watchdog couldn't see, and a status
+command to observe the link.
 
 ### Added
 
