@@ -35,12 +35,13 @@ class Harness:
     """Installs fake bleak objects; records every client the worker creates."""
 
     def __init__(self, monkeypatch, *, mtu=185, send_ack=True, device="scan",
-                 flap=False):
-        self.clients  = []
-        self.mtu      = mtu
-        self.send_ack = send_ack
-        self.flap     = flap    # each session drops the instant it comes up
-        self.device   = FakeDevice() if device == "scan" else device
+                 flap=False, probe_hang=False):
+        self.clients    = []
+        self.mtu        = mtu
+        self.send_ack   = send_ack
+        self.flap       = flap        # each session drops the instant it comes up
+        self.probe_hang = probe_hang  # CONFIG read never answers (half-open link)
+        self.device     = FakeDevice() if device == "scan" else device
         harness = self
 
         class FakeClient:
@@ -49,6 +50,7 @@ class Harness:
                 self.on_disc     = disconnected_callback
                 self.mtu_size    = harness.mtu
                 self.writes      = []   # (uuid, bytes, response)
+                self.reads       = []   # uuids read (liveness probe)
                 self.notify_subs = []
                 self.is_connected = False
                 harness.clients.append(self)
@@ -70,6 +72,14 @@ class Harness:
 
             async def write_gatt_char(self, uuid, data, response=True):
                 self.writes.append((uuid, bytes(data), response))
+
+            async def read_gatt_char(self, uuid):
+                self.reads.append(uuid)
+                if harness.probe_hang:
+                    # Peer silently gone: never answers, so the probe's wait_for
+                    # times out — the macOS half-open link the fix must detect.
+                    await asyncio.sleep(5.0)
+                return bytearray([1, 45, 30, 1])   # CONFIG snapshot
 
             def drop(self):
                 """Simulate a link drop (thread-safe, like a real backend)."""
@@ -343,3 +353,71 @@ def test_close_joins_worker(monkeypatch):
     t.close()
     assert not t._thread.is_alive()
     assert t.send(FRAME) is False                     # after close: best-effort no
+
+
+def test_liveness_probe_reads_config_and_keeps_session(monkeypatch, transport_factory):
+    # With no conn ack, _last_rx stays 0 so the idle heartbeat actively probes; a
+    # successful CONFIG read proves the peer is alive and the session continues —
+    # no spurious reconnect.
+    monkeypatch.setattr(ble, "HEARTBEAT_S", 0.02)
+    monkeypatch.setattr(ble, "HEARTBEAT_TIMEOUT_S", 0.2)
+    h = Harness(monkeypatch, send_ack=False)
+    t = transport_factory(h)
+    wait_until(lambda: t._connected.is_set(), msg="connect")
+    c = h.clients[0]
+    wait_until(lambda: c.reads, msg="liveness probe read")
+    assert c.reads[0] == ble.CONFIG_CHAR_UUID         # probed the right char
+    time.sleep(0.1)
+    assert t._connected.is_set()                      # still up
+    assert len(h.clients) == 1                        # never reconnected
+    assert t._probe_dead is False
+
+
+def test_half_open_link_detected_and_reconnects(monkeypatch, transport_factory):
+    # macOS holds the link "connected" but the peer is gone — the disconnect
+    # callback never fires. The heartbeat's CONFIG read times out, so the worker
+    # tears the session down and reconnects instead of waiting forever (the
+    # multi-day silent wedge).
+    monkeypatch.setattr(ble, "HEARTBEAT_S", 0.02)
+    monkeypatch.setattr(ble, "HEARTBEAT_TIMEOUT_S", 0.05)
+    h = Harness(monkeypatch, send_ack=False, probe_hang=True)
+    t = transport_factory(h)
+    wait_until(lambda: len(h.clients) >= 2, msg="half-open detected → reconnect")
+    assert h.clients[0].reads                         # it did probe the dead link
+    assert not h.clients[0].is_connected              # and tore the session down
+
+
+def test_liveness_probe_encryption_error_is_alive(monkeypatch, transport_factory):
+    # An unbonded-but-live link rejects the READ_ENC CONFIG read; that still proves
+    # the peer is there, so the session must NOT be torn down.
+    monkeypatch.setattr(ble, "HEARTBEAT_S", 0.02)
+    monkeypatch.setattr(ble, "HEARTBEAT_TIMEOUT_S", 0.2)
+    h = Harness(monkeypatch, send_ack=False)
+    t = transport_factory(h)
+    wait_until(lambda: t._connected.is_set(), msg="connect")
+
+    async def _reject(uuid):
+        raise Exception("Insufficient Encryption")
+    h.clients[0].read_gatt_char = _reject
+
+    time.sleep(0.1)
+    assert t._connected.is_set()                      # survived the rejected read
+    assert len(h.clients) == 1                        # not treated as dead
+    assert t._probe_dead is False
+
+
+def test_half_open_wedge_recycles_process_when_supervised(monkeypatch, transport_factory):
+    # A permanently half-open stack (every reconnect immediately dead) is a wedge:
+    # repeated probe-killed sessions must feed the SAME self-heal watchdog and
+    # recycle the process — even with FLAP_SESSION_MIN_S=0 so no session counts as
+    # a duration-flap and ONLY the probe-dead path can trip it.
+    monkeypatch.setattr(ble, "HEARTBEAT_S", 0.02)
+    monkeypatch.setattr(ble, "HEARTBEAT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(ble, "FLAP_SESSION_MIN_S", 0.0)
+    monkeypatch.setattr(ble, "FLAP_MAX_CYCLES", 3)
+    h = Harness(monkeypatch, send_ack=False, probe_hang=True)
+    restarts = {"n": 0}
+    t = transport_factory(h, self_heal=True,
+                          restart_hook=lambda: restarts.__setitem__("n", restarts["n"] + 1))
+    wait_until(lambda: restarts["n"] == 1, msg="probe-dead wedge recycles process")
+    assert len(h.clients) >= 3          # it really did retry several dead sessions
