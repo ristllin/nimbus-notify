@@ -52,6 +52,36 @@ CTA_STATES: frozenset = frozenset({
     State.Error,
 })
 
+# Wake-up window vocabulary (CUM-14). A session that arms a scheduled wake-up
+# (Claude Code ScheduleWakeup / Cron*) hands off to a TIMER, not a human: the turn
+# is effectively done and the next one fires later on its own. Reporting a `wakeup`
+# verb resolves that window to Done, a BENIGN state that ages out on the short
+# SESSION_TTL_S. Without this, a Stop-less wake-up window either sticks at Running
+# (a lit blue arc, cleared only by the benign TTL) or, worse, the 60 s idle
+# notification mislabels it WaitingInput and pins a false "needs you" CTA for the
+# long CTA_TTL_S with nobody watching. See broker.server.handle_event.
+WAKEUP_VERBS: frozenset = frozenset({"wakeup"})
+
+# A per-session liveness ping. Refreshes the session's last_event WITHOUT changing
+# its state, so a long-running turn (or a supervisor) can prove a session is alive
+# and keep it off the idle reaper, and it can NEVER relight a Done/CTA segment or
+# resurrect an ended one. Handled specially in broker.server (never mapped to a
+# State, never creates a session).
+HEARTBEAT_VERB = "heartbeat"
+
+# Verbs that prove the session resumed genuine work (or finished a turn) and so
+# clear a pending wake-up window: the timer handoff is over, treat events normally.
+ACTIVITY_VERBS: frozenset = frozenset({
+    "start", "running", "before_tool", "after_tool:success", "done", "post_agent_turn",
+})
+
+# Substrings that mark an unmapped ``notify:*`` subtype as a PERMISSION/approval
+# gate rather than a plain human-input wait, so a permission that arrives under a
+# subtype we don't explicitly map still renders amber "approve" (AwaitingApproval),
+# never purple "waiting on you" (WaitingInput). Keeps permission distinct from
+# input even as Claude Code adds new notification subtypes (CUM-14).
+_PERMISSION_HINTS: tuple = ("permission", "approval", "approve", "consent")
+
 
 @dataclass
 class SessionRecord:
@@ -70,6 +100,11 @@ class SessionRecord:
                               # is evicted on the next sweep instead of holding its
                               # (possibly red) segment for the full CTA TTL.
     last_event: float = field(default_factory=time.monotonic)
+    awaiting_wakeup: bool = False  # session armed a scheduled wake-up and handed off
+                              # to a timer (CUM-14). While set, the 60 s idle
+                              # notification resolves to Done (benign, ages out)
+                              # instead of a false WaitingInput CTA. Cleared by any
+                              # genuine activity (ACTIVITY_VERBS) or session end.
 
     def touch(self) -> None:
         self.last_event = time.monotonic()
@@ -110,6 +145,10 @@ _VERB_TO_STATE: dict[str, State] = {
     "notify:elicitation_complete":State.Running,
     "hitl_inferred":            State.AwaitingApproval,   # Vibe heuristic
     "plan_pending":             State.WaitingInput,       # Codex plan-mode Stop = waiting on you
+    # Wake-up window (CUM-14): the session armed a scheduled wake-up and handed off
+    # to a timer. The window is Done (benign) and ages out on the short benign TTL,
+    # so a Stop-less wake-up can't leave a lit arc pinned on the ring.
+    "wakeup":                   State.Done,
 }
 
 
@@ -120,7 +159,15 @@ def verb_to_state(verb: str) -> State:
     subtypes: a Notification by definition means the agent wants the human
     (owner bug: Claude's plan-approval prompt arrived as an unmapped notify
     subtype and rendered as plain Running — a needs-you state showed nothing).
+
+    Among unknown ``notify:*`` subtypes we still separate a PERMISSION/approval
+    gate (amber AwaitingApproval) from a plain human-input wait (purple
+    WaitingInput) by keyword, so a permission stays visually distinct from a
+    question even under a subtype we don't explicitly map (CUM-14).
     """
     if verb not in _VERB_TO_STATE and verb.startswith("notify:"):
+        subtype = verb[len("notify:"):].lower()
+        if any(hint in subtype for hint in _PERMISSION_HINTS):
+            return State.AwaitingApproval
         return State.WaitingInput
     return _VERB_TO_STATE.get(verb, State.Running)

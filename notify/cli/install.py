@@ -45,6 +45,11 @@ CLAUDE_HOOKS = [
     ("SessionStart", None, "start"),
     ("UserPromptSubmit", None, "running"),
     ("PreToolUse", "*", "running"),
+    # Wake-up handoff (CUM-14): when a session ARMS a scheduled wake-up, that turn
+    # is effectively done and the next fires later on a timer. PostToolUse on the
+    # scheduling tools reports `wakeup`, which the broker resolves to a benign Done
+    # that ages out, so a Stop-less wake-up window can't leave a lit arc pinned.
+    ("PostToolUse", "ScheduleWakeup|CronCreate", "wakeup"),
     ("Notification", "*", "notify"),   # NOT PermissionRequest — Claude Code never emits that
     ("Stop", None, "done"),
     ("StopFailure", None, "error"),

@@ -8,8 +8,14 @@ and sends a single JSON line to the broker over its Unix socket.
 Exit codes: 0 = delivered or broker not running (silent fail), 1 = usage error.
 
 Usage:
-  led-report claude  (start|running|notify|done|end|error)
+  led-report claude  (start|running|notify|wakeup|heartbeat|done|end|error)
   led-report codex   (start|running|approval|done|end|error)
+
+  `wakeup`:    the session armed a scheduled wake-up (ScheduleWakeup / Cron*) and
+                handed off to a timer; the broker resolves the window to Done so a
+                Stop-less wake-up can't pin a lit segment (see docs/protocol.md).
+  `heartbeat`: refresh this session's idle timer only (no state change); keeps a
+                long-running-but-alive turn off the idle reaper.
   led-report codex-notify '<json>'   # Codex notify-program mode: json in argv
   led-report vibe    (before_tool|after_tool:success|after_tool:failure|post_agent_turn|start|end)
 """

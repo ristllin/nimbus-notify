@@ -77,6 +77,54 @@ redraw rather than a literal blink). The state and priority semantics are
 what other devices should treat as the contract; the visual mapping is a
 suggestion from the reference implementation.
 
+## Host event protocol (`led-report` -> broker)
+
+The wire frame above is what the broker pushes to a device. Upstream of it, the
+harness hooks report *events* to the broker over its Unix socket, as one JSON line
+per event: `{harness, session_id, cwd, verb, notification_type?, pid?}`. The broker
+maps the `verb` to a wire `State` (see `notify/broker/session.py`). A device
+implementor can ignore this section; it matters to anyone wiring a new harness or
+an unattended loop.
+
+Canonical verbs: `start` (Idle), `running` / `before_tool` / `after_tool:success`
+(Running), `done` / `post_agent_turn` (Done), `error` / `after_tool:failure`
+(Error), `approval` (AwaitingApproval), `end` (Offline), and Claude `notify` events
+folded to `notify:<notification_type>`.
+
+Three rules keep an *unattended* session from pinning a ring segment (all resolve
+to existing wire States, so no device change is required):
+
+- **Permission stays distinct from a human-input wait.** `notify:permission_prompt`
+  (and any `notify:*` subtype whose name contains `permission`, `approval`,
+  `approve`, or `consent`) maps to **AwaitingApproval** (amber); every other
+  human-facing `notify:*` maps to **WaitingInput** (purple). A permission is never
+  silently downgraded to a plain question, even under a subtype the broker does not
+  explicitly know.
+
+- **`heartbeat`: a per-session liveness ping.** Refreshes the session's idle timer
+  only: it never changes state, never creates a session, and never relights a
+  retired or call-to-action segment. A long-running turn (or a supervisor) can send
+  it to keep a genuinely-alive session off the idle reaper without disturbing what
+  the ring shows.
+
+- **`wakeup`: resolve a Stop-less wake-up window.** When a session arms a scheduled
+  wake-up (Claude Code `ScheduleWakeup` / `CronCreate`, reported via a `PostToolUse`
+  hook), the turn has handed off to a timer, not to a human. `wakeup` resolves the
+  window to **Done**, a benign state that ages out on the short idle TTL. While a
+  wake-up is pending, the 60 s idle notification is treated as Done too (a timer
+  wait, not a "needs you" wait), so it cannot pin a WaitingInput segment for the
+  long call-to-action hold. Any genuine activity clears the pending wake-up.
+
+### Idle timeout (the reaper)
+
+Because a hard-killed session never sends its clean `end`, the broker also evicts
+by idle time: benign states (Idle / Running / Done) age out after `SESSION_TTL_S`,
+call-to-action states (WaitingInput / AwaitingApproval / Error) hold the longer
+`CTA_TTL_S` so a job blocked on a human can't vanish, and a session whose reported
+`pid` was once seen alive and is now gone is evicted on the next sweep. A dead
+session therefore cannot pin a segment for longer than one CTA hold, and a wake-up
+loop leaves nothing lit between fires.
+
 ## Transports
 
 The broker ships two transports; a device only needs to implement one:

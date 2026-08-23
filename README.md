@@ -264,8 +264,28 @@ nimbus-notify-broker --ttl 120   # default: drop a silent benign session after 1
   Lower it for a snappier ring; raise it to keep quiet-but-alive sessions on the
   ring longer. Floored at 5 s.
 - **Call-to-action** states (awaiting approval / awaiting input / error) always
-  hold **900 s** regardless of `--ttl`, so a job that's blocked *on you* can't
-  quietly disappear from the ring while it's still pending.
+  hold **300 s** (matching the device's 5-minute attention hold) regardless of
+  `--ttl`, so a job that's blocked *on you* can't quietly disappear from the ring
+  while it's still pending. A session whose reported `pid` was seen alive and is
+  now gone is evicted on the very next sweep, so a killed job never waits out the
+  full hold.
+
+For **unattended loops**, two more signals keep a segment from getting pinned
+(both resolve to existing states, so no firmware change is needed):
+
+- **`wakeup`**: when a session arms a scheduled wake-up (Claude Code
+  `ScheduleWakeup` / `CronCreate`, reported via a `PostToolUse` hook that
+  `install-hooks` wires for you), the turn has handed off to a timer, not to you.
+  The broker resolves that window to a benign **Done** that ages out on the short
+  TTL, so a Stop-less wake-up window never leaves a lit arc pinned, and the 60-second
+  idle notification during a wake-up wait is not mistaken for a "needs you" prompt.
+- **`heartbeat`**: a liveness ping (`led-report claude heartbeat --pid $PPID`) that
+  refreshes a session's idle timer without changing what the ring shows. A long
+  supervised turn can send it to stay off the reaper; it never relights a finished
+  or pending segment.
+
+See [docs/protocol.md](docs/protocol.md#host-event-protocol-led-report---broker)
+for the full host event vocabulary.
 
 ### Bonding the BLE link (one time)
 
