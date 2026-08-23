@@ -1,4 +1,4 @@
-"""CUM-14 — broker state-model hardening for unattended wake-up loops.
+"""CUM-14: broker state-model hardening for unattended wake-up loops.
 
 Pins three behaviors:
   1. Permission stays visually distinct from a human-input wait, even for
@@ -147,7 +147,7 @@ def test_wakeup_window_ages_out_on_benign_ttl(monkeypatch):
     b.handle_event(_ev("s1", "wakeup"))
     rec = b._allocator._sessions["s1"]
     # Past the benign TTL (120s) but well within the CTA TTL (300s): a benign Done
-    # must be reaped here — a false CTA would survive.
+    # must be reaped here; a false CTA would survive.
     monkeypatch.setattr(session_mod.time, "monotonic", lambda: rec.last_event + 130.0)
     b._sweep_once()
     assert b._allocator.active_segments() == []  # expired, not pinned
@@ -155,7 +155,7 @@ def test_wakeup_window_ages_out_on_benign_ttl(monkeypatch):
 
 def test_idle_prompt_during_wakeup_wait_is_not_a_cta():
     # The 60s idle notification while awaiting a wake-up must NOT become a purple
-    # WaitingInput CTA — it's a timer wait, not a human wait.
+    # WaitingInput CTA; it's a timer wait, not a human wait.
     b, _ = _mk()
     b.handle_event(_ev("s1", "wakeup"))
     b.handle_event(_ev("s1", "notify", ntype="idle_prompt"))
