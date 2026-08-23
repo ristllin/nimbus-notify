@@ -177,6 +177,29 @@ def test_activity_clears_the_wakeup_flag():
     assert _state(b, "s1") == State.WaitingInput
 
 
+def test_error_during_wakeup_wait_is_not_downgraded_by_idle():
+    # A wake-up armed, then the turn ERRORS, then a 60s idle prompt: the red Error
+    # must survive (a later idle must NOT silently downgrade a real needs-you to Done).
+    b, _ = _mk()
+    b.handle_event(_ev("s1", "wakeup"))
+    b.handle_event(_ev("s1", "error"))
+    assert _state(b, "s1") == State.Error
+    assert b._allocator._sessions["s1"].awaiting_wakeup is False   # CTA cleared the flag
+    b.handle_event(_ev("s1", "notify", ntype="idle_prompt"))
+    assert _state(b, "s1") == State.WaitingInput   # genuine wait, NOT a hidden Done
+    assert _state(b, "s1") in CTA_STATES
+
+
+def test_question_during_wakeup_wait_is_not_downgraded():
+    # wake-up armed, then the agent asks a real question (elicitation): shown as
+    # WaitingInput and the flag clears, so a later idle can't hide it.
+    b, _ = _mk()
+    b.handle_event(_ev("s1", "wakeup"))
+    b.handle_event(_ev("s1", "notify", ntype="elicitation_dialog"))
+    assert _state(b, "s1") == State.WaitingInput
+    assert b._allocator._sessions["s1"].awaiting_wakeup is False
+
+
 def test_normal_session_idle_prompt_still_waits_on_you():
     # No wake-up armed -> idle prompt is a genuine WaitingInput (no regression).
     b, _ = _mk()
@@ -195,4 +218,7 @@ def test_resolve_wakeup_table():
     assert _resolve_wakeup("notify:idle_prompt", State.WaitingInput, False) == (State.WaitingInput, False)
     assert _resolve_wakeup("running", State.Running, True) == (State.Running, False)
     assert _resolve_wakeup("done", State.Done, True) == (State.Done, False)
-    assert _resolve_wakeup("error", State.Error, True) == (State.Error, True)  # carries flag
+    # A real CTA while armed clears the flag and shows the true state (Finding 1).
+    assert _resolve_wakeup("error", State.Error, True) == (State.Error, False)
+    assert _resolve_wakeup("notify:permission_prompt", State.AwaitingApproval, True) \
+        == (State.AwaitingApproval, False)

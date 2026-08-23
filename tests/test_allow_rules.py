@@ -90,6 +90,30 @@ def test_refuses_malformed_allow(tmp_path, monkeypatch):
     assert _read(tmp_path)["permissions"]["allow"] == "Bash"
 
 
+def test_refuses_non_object_json(tmp_path, monkeypatch):
+    # Valid JSON that is not an object (null / list / string / number): refuse, don't crash.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    for payload in ("null", "[]", '"x"', "42"):
+        settings = CLAUDE(tmp_path)
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(payload)
+        install.install_allow_rules(dry_run=False)   # must not raise AttributeError
+        assert settings.read_text() == payload        # left untouched
+
+
+def test_tolerates_unhashable_allow_entry(tmp_path, monkeypatch):
+    # A hand-edited allow list with a non-string entry must not crash set() dedup.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings = CLAUDE(tmp_path)
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"permissions": {"allow": [{"weird": 1}, "ScheduleWakeup"]}}))
+    install.install_allow_rules(dry_run=False)        # must not raise TypeError
+    allow = _read(tmp_path)["permissions"]["allow"]
+    assert {"weird": 1} in allow                      # preserved
+    assert allow.count("ScheduleWakeup") == 1         # not duplicated
+    assert "CronCreate" in allow                      # missing rules still added
+
+
 def test_refuses_invalid_json(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     settings = CLAUDE(tmp_path)

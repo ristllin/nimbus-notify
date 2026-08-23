@@ -22,6 +22,7 @@ from notify.broker.frame import FrameSegment, HARNESS_CODE, encode_frame
 from notify.broker.segments import SegmentAllocator
 from notify.broker.session import (
     ACTIVITY_VERBS,
+    CTA_STATES,
     CTA_TTL_S,
     HEARTBEAT_VERB,
     SESSION_TTL_S,
@@ -48,7 +49,13 @@ def _resolve_wakeup(verb: str, base_state: State, prior_flag: bool) -> tuple[Sta
     Returns ``(state, flag)``:
       - a ``wakeup`` verb  -> (Done, True): the session armed a timer, the window
         is resolved to a benign state that ages out on the short TTL.
-      - while already armed, the 60 s idle notification -> (Done, True): a wake-up
+      - a GENUINE call-to-action (approval / a real question / an error) while armed
+        -> (base, False): a needs-you or a failure OVERRIDES the timer wait and
+        clears the flag, so a later idle prompt cannot silently downgrade a red
+        Error or an amber approval back to Done (the worst-direction failure). The
+        idle notification itself is excluded here so the timer-wait de-escalation
+        below still applies to it.
+      - while still armed, the 60 s idle notification -> (Done, True): a wake-up
         wait is a TIMER wait, not a human wait, so it must not pin a WaitingInput
         CTA for the long CTA TTL.
       - genuine activity / completion (:data:`ACTIVITY_VERBS`) -> (base, False):
@@ -57,6 +64,11 @@ def _resolve_wakeup(verb: str, base_state: State, prior_flag: bool) -> tuple[Sta
     """
     if verb in WAKEUP_VERBS:
         return State.Done, True
+    # A real needs-you (or error) beats the timer wait: clear the flag and show it,
+    # so the idle-prompt de-escalation can't later hide it. idle_prompt is a CTA
+    # (WaitingInput) too, but it is the timer-wait signal, so it is handled below.
+    if base_state in CTA_STATES and verb != "notify:idle_prompt":
+        return base_state, False
     if prior_flag and verb == "notify:idle_prompt":
         return State.Done, True
     if verb in ACTIVITY_VERBS:

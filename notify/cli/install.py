@@ -144,13 +144,17 @@ def _merge_allow_rules(existing: dict, rules: list[str]):
     and any rules already there. Returns (added, skipped) rule lists. Mutates
     `existing`. Returns (None, None) if permissions.allow exists but isn't a list
     (caller refuses to touch a malformed file)."""
+    if not isinstance(existing, dict):     # valid JSON but not an object (null/list/str/int)
+        return None, None
     perms = existing.setdefault("permissions", {})
     if not isinstance(perms, dict):
         return None, None
     allow = perms.setdefault("allow", [])
     if not isinstance(allow, list):
         return None, None
-    present = set(allow)
+    # Only STRING rules are hashable/meaningful; a hand-edited list with a dict entry
+    # must not crash set(). Non-string entries are preserved but ignored for dedup.
+    present = {r for r in allow if isinstance(r, str)}
     added, skipped = [], []
     for rule in rules:
         if rule in present:
@@ -175,7 +179,7 @@ def _write_allow_rules(path: Path, rules: list[str], dry_run: bool) -> bool:
     before = json.dumps(existing, indent=2, sort_keys=True)
     added, skipped = _merge_allow_rules(existing, rules)
     if added is None:
-        print(f"  ! {path}: permissions.allow is not a list; refusing to touch it.")
+        print(f"  ! {path}: not a JSON object with a list permissions.allow; refusing to touch it.")
         return False
     after = json.dumps(existing, indent=2, sort_keys=True)
 

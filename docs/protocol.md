@@ -113,7 +113,17 @@ to existing wire States, so no device change is required):
   window to **Done**, a benign state that ages out on the short idle TTL. While a
   wake-up is pending, the 60 s idle notification is treated as Done too (a timer
   wait, not a "needs you" wait), so it cannot pin a WaitingInput segment for the
-  long call-to-action hold. Any genuine activity clears the pending wake-up.
+  long call-to-action hold. A genuine call-to-action (an approval, a real question,
+  or an error) that arrives while a wake-up is pending clears the pending flag and
+  is shown as-is, so a later idle notification cannot downgrade it back to Done. Any
+  genuine activity also clears the pending wake-up.
+
+  *Known limitation:* the `PostToolUse` hook fires whether the tool succeeded or
+  not, so a wake-up that FAILED to arm (bad schedule, quota) is still reported as
+  `wakeup` and the window resolves to Done. Such a session ages out on the benign
+  TTL rather than showing as stuck. In practice the agent sees the tool error and
+  reacts in the same turn; a fully robust fix would inspect the `PostToolUse`
+  `tool_response` before emitting `wakeup`.
 
 ### Idle timeout (the reaper)
 
@@ -122,8 +132,10 @@ by idle time: benign states (Idle / Running / Done) age out after `SESSION_TTL_S
 call-to-action states (WaitingInput / AwaitingApproval / Error) hold the longer
 `CTA_TTL_S` so a job blocked on a human can't vanish, and a session whose reported
 `pid` was once seen alive and is now gone is evicted on the next sweep. A dead
-session therefore cannot pin a segment for longer than one CTA hold, and a wake-up
-loop leaves nothing lit between fires.
+session therefore cannot pin a segment for longer than one CTA hold. A wake-up loop
+shows at most a benign `Done` ember between fires (the settled green, not a lit
+"working" arc), and that ember ages out on the short benign TTL once the idle
+notifications stop.
 
 ## Transports
 
