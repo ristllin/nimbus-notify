@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+Broker state-model hardening for unattended loops, plus a helper to pre-approve
+Claude Code's wake-up tools so a headless session never stalls on a prompt.
+
+### Added
+
+- **`nimbus-notify install-allow-rules`.** Pre-approves Claude Code's wake-up
+  tools (`ScheduleWakeup`, `CronCreate`, `CronDelete`, `CronList`) in
+  `~/.claude/settings.json` so an unattended loop can arm and retire its own
+  wake-ups without a permission prompt. That prompt is itself a stuck-ring cause:
+  a headless session parks in `AwaitingApproval` (an amber "needs you" segment)
+  waiting on a human who is not watching, and the wake-up never arms. The merge is
+  idempotent, backs up before writing, and only appends the wake-up rules into
+  `permissions.allow` (your other permissions are left untouched). `doctor` reports
+  whether the rules are present (advisory only, so interactive-only setups still
+  pass).
+
 ## 1.5.0 (2026-08-12)
 
 Detect the silent half-open BLE link the flap watchdog couldn't see, and a status

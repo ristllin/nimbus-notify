@@ -8,7 +8,13 @@ any hooks you already have.
 
 Usage:
     nimbus-notify install-hooks [--harness claude|codex|vibe|all] [--dry-run]
+    nimbus-notify install-allow-rules [--dry-run]
     nimbus-notify doctor
+
+`install-allow-rules` pre-approves Claude Code's wake-up tools (ScheduleWakeup,
+Cron*) in ~/.claude/settings.json so an UNATTENDED loop can arm and retire its own
+wake-ups without a permission prompt. The prompt would otherwise park the session
+in AwaitingApproval (an amber "needs you" ring segment) with nobody watching.
 
 `install-hooks` fully automates the JSON surfaces (Claude `settings.json`, Codex
 `hooks.json`) — it APPENDS our hook groups, never replaces your arrays, and skips
@@ -96,6 +102,114 @@ def build_codex_hooks() -> dict:
     for event, matcher, verb in CODEX_HOOKS:
         hooks.setdefault(event, []).append(_codex_group(verb, matcher))
     return {"hooks": hooks}
+
+
+# ---------------------------------------------------------------------------
+# Claude Code allow-rules: pre-approve the wake-up tools for unattended loops.
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS.  nimbus-notify's whole job is to show the state of AI coding
+# sessions that mostly run UNATTENDED: overnight loops, scheduled wake-ups, a
+# fleet of headless agents.  Claude Code gates its wake-up tools (ScheduleWakeup,
+# the Cron* family) behind a permission prompt by default.  In an interactive
+# session that prompt is fine; in an unattended one it is the bug: the session
+# parks in AwaitingApproval (an amber "needs you" segment on the ring) waiting on
+# a human who is not there, and the wake-up never arms.  That is exactly the
+# stuck-segment class this project exists to eliminate.
+#
+# `install-allow-rules` pre-approves those tools in ~/.claude/settings.json so a
+# loop can BOTH arm a wake-up AND retire it (self-terminate) without a prompt:
+# no approval gate, no pinned segment.  It merges the same way `install-hooks`
+# does: append-only into `permissions.allow`, skipping rules already present, so
+# it is safe to re-run and never disturbs your other permissions.
+#
+# Claude Code matches these as bare tool-name allow rules (the same syntax the
+# /permissions UI writes).  The set is deliberately the wake-up/loop tools only
+# (arming, retiring, and read-only inspection), not a blanket allow.
+CLAUDE_ALLOW_RULES = [
+    "ScheduleWakeup",  # arm a one-shot / self-paced wake-up (dynamic loop)
+    "CronCreate",      # arm a recurring wake-up job
+    "CronDelete",      # RETIRE a wake-up when the loop is done (self-terminate)
+    "CronList",        # read-only: inspect currently-armed jobs
+]
+
+
+def _merge_allow_rules(existing: dict, rules: list[str]):
+    """Append `rules` into `existing['permissions']['allow']`, preserving order
+    and any rules already there. Returns (added, skipped) rule lists. Mutates
+    `existing`. Returns (None, None) if permissions.allow exists but isn't a list
+    (caller refuses to touch a malformed file)."""
+    perms = existing.setdefault("permissions", {})
+    if not isinstance(perms, dict):
+        return None, None
+    allow = perms.setdefault("allow", [])
+    if not isinstance(allow, list):
+        return None, None
+    present = set(allow)
+    added, skipped = [], []
+    for rule in rules:
+        if rule in present:
+            skipped.append(rule)
+        else:
+            allow.append(rule)
+            added.append(rule)
+    return added, skipped
+
+
+def _write_allow_rules(path: Path, rules: list[str], dry_run: bool) -> bool:
+    """Merge the wake-up allow `rules` into the Claude settings JSON at `path`.
+    Idempotent, dry-run aware, backs up before writing. Returns True if a write
+    happened (or would under --dry-run)."""
+    existing = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text() or "{}")
+        except json.JSONDecodeError as e:
+            print(f"  ! {path} is not valid JSON ({e}); refusing to touch it.")
+            return False
+    before = json.dumps(existing, indent=2, sort_keys=True)
+    added, skipped = _merge_allow_rules(existing, rules)
+    if added is None:
+        print(f"  ! {path}: permissions.allow is not a list; refusing to touch it.")
+        return False
+    after = json.dumps(existing, indent=2, sort_keys=True)
+
+    if not added:
+        print(f"  = {path}: already allowed ({', '.join(skipped) or 'nothing to do'}).")
+        return False
+    print(f"  + {path}: allowing {', '.join(added)}"
+          + (f"  (kept {', '.join(skipped)})" if skipped else ""))
+    if dry_run:
+        diff = difflib.unified_diff(before.splitlines(), after.splitlines(),
+                                    fromfile=str(path), tofile=str(path) + " (new)", lineterm="")
+        print("\n".join("      " + ln for ln in diff))
+        return True
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        bak = path.with_suffix(path.suffix + ".bak")
+        bak.write_text(path.read_text())
+        print(f"    (backed up -> {bak})")
+    path.write_text(json.dumps(existing, indent=2) + "\n")
+    return True
+
+
+def install_allow_rules(dry_run: bool) -> None:
+    print("Claude Code wake-up allow-rules (~/.claude/settings.json):")
+    _write_allow_rules(Path.home() / ".claude" / "settings.json",
+                       CLAUDE_ALLOW_RULES, dry_run)
+    print("  (why: an unattended loop can arm + retire its own wake-ups without a "
+          "permission prompt that would otherwise pin an amber segment.)")
+
+
+def _allow_rules_wired(path: Path) -> bool:
+    """True if every wake-up allow-rule is already present in the settings file."""
+    if not path.exists():
+        return False
+    try:
+        allow = json.loads(path.read_text() or "{}").get("permissions", {}).get("allow", [])
+    except (json.JSONDecodeError, AttributeError, OSError):
+        return False
+    return isinstance(allow, list) and set(CLAUDE_ALLOW_RULES) <= set(allow)
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +508,16 @@ def doctor() -> int:
         print("  [warn] no harness has led-report hooks — run: nimbus-notify install-hooks")
         ok = False
 
+    # Claude wake-up allow-rules (advisory: unattended loops want these, but an
+    # interactive-only setup is fine without them (never fails `doctor`).
+    claude_settings = Path.home() / ".claude" / "settings.json"
+    if claude_settings.exists():
+        allowed = _allow_rules_wired(claude_settings)
+        note = ("present" if allowed else
+                "not set (run: nimbus-notify install-allow-rules for unattended loops)")
+        print(f"  [{'ok' if allowed else '..'}]   claude wake-up allow-rules "
+              f"{note}: {claude_settings}")
+
     vibe_cfg = Path.home() / ".vibe" / "config.toml"
     if vibe_cfg.exists():
         flag_set = _VIBE_FLAG in vibe_cfg.read_text()
@@ -421,6 +545,11 @@ def main(argv=None) -> int:
     ih.add_argument("--harness", choices=["claude", "codex", "vibe", "all"], default="all")
     ih.add_argument("--dry-run", action="store_true", help="print the changes, write nothing")
 
+    ar = sub.add_parser("install-allow-rules",
+                        help="pre-approve Claude Code wake-up tools (ScheduleWakeup, "
+                             "Cron*) so unattended loops don't stall on a prompt")
+    ar.add_argument("--dry-run", action="store_true", help="print the changes, write nothing")
+
     sub.add_parser("doctor", help="check broker + hooks + device")
     sub.add_parser("status", help="is the device connected right now, and which one?")
 
@@ -437,6 +566,11 @@ def main(argv=None) -> int:
             install_codex(args.dry_run)
         if which in ("vibe", "all"):
             install_vibe(args.dry_run)
+        if not args.dry_run:
+            print("\nDone. Verify:  nimbus-notify doctor")
+        return 0
+    if args.cmd == "install-allow-rules":
+        install_allow_rules(args.dry_run)
         if not args.dry_run:
             print("\nDone. Verify:  nimbus-notify doctor")
         return 0

@@ -52,7 +52,9 @@ This installs three commands on your `PATH`:
 - `led-report` — the small CLI that harness hooks call to report events
   into the broker (fire-and-forget; never blocks your agent).
 - `nimbus-notify` — setup helper: `install-hooks` wires `led-report` into your
-  harness config (idempotent, preserves existing hooks); `doctor` checks your setup.
+  harness config (idempotent, preserves existing hooks); `install-allow-rules`
+  pre-approves Claude Code's wake-up tools for unattended loops; `doctor` checks
+  your setup.
 
 > **If `pip` itself errors** before it reaches this package (e.g. a Python 3.14
 > `pyexpat`/`libexpat` dylib mismatch on macOS), that's a broken host pip — use
@@ -161,6 +163,27 @@ have (append to each event's array rather than replacing it). It wires up
 `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `Notification`, `Stop`,
 `StopFailure`, and `SessionEnd`. ⚠ The "needs you" ring uses the **`Notification`**
 event — not `PermissionRequest` (a Codex event name that Claude Code never emits).
+
+#### Wake-up allow-rules (unattended loops)
+
+If you run Claude Code **unattended** (overnight loops, scheduled wake-ups, a
+headless fleet), pre-approve the wake-up tools so a session can arm and retire
+its own wake-ups without stopping for a permission prompt:
+
+```bash
+nimbus-notify install-allow-rules            # merge into ~/.claude/settings.json
+nimbus-notify install-allow-rules --dry-run  # preview the change first
+```
+
+This appends `ScheduleWakeup`, `CronCreate`, `CronDelete`, and `CronList` to
+`permissions.allow` (idempotent, backs up first, never touches your other
+permissions). **Why it matters here:** Claude Code gates those tools behind an
+approval prompt by default. In an unattended session that prompt is itself the
+stuck-ring bug: the session parks in `AwaitingApproval` (an amber "needs you"
+segment) waiting on a human who is not watching, and the wake-up never arms.
+Pre-approving them lets the loop both arm a wake-up and self-terminate cleanly,
+so no segment gets pinned. Skip this if you only run Claude Code interactively;
+`doctor` treats it as advisory, never a failure.
 
 ### Codex
 
