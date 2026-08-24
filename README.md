@@ -52,7 +52,9 @@ This installs three commands on your `PATH`:
 - `led-report` — the small CLI that harness hooks call to report events
   into the broker (fire-and-forget; never blocks your agent).
 - `nimbus-notify` — setup helper: `install-hooks` wires `led-report` into your
-  harness config (idempotent, preserves existing hooks); `doctor` checks your setup.
+  harness config (idempotent, preserves existing hooks); `install-allow-rules`
+  pre-approves Claude Code's wake-up tools for unattended loops; `doctor` checks
+  your setup.
 
 > **If `pip` itself errors** before it reaches this package (e.g. a Python 3.14
 > `pyexpat`/`libexpat` dylib mismatch on macOS), that's a broken host pip — use
@@ -162,6 +164,27 @@ have (append to each event's array rather than replacing it). It wires up
 `StopFailure`, and `SessionEnd`. ⚠ The "needs you" ring uses the **`Notification`**
 event — not `PermissionRequest` (a Codex event name that Claude Code never emits).
 
+#### Wake-up allow-rules (unattended loops)
+
+If you run Claude Code **unattended** (overnight loops, scheduled wake-ups, a
+headless fleet), pre-approve the wake-up tools so a session can arm and retire
+its own wake-ups without stopping for a permission prompt:
+
+```bash
+nimbus-notify install-allow-rules            # merge into ~/.claude/settings.json
+nimbus-notify install-allow-rules --dry-run  # preview the change first
+```
+
+This appends `ScheduleWakeup`, `CronCreate`, `CronDelete`, and `CronList` to
+`permissions.allow` (idempotent, backs up first, never touches your other
+permissions). **Why it matters here:** Claude Code gates those tools behind an
+approval prompt by default. In an unattended session that prompt is itself the
+stuck-ring bug: the session parks in `AwaitingApproval` (an amber "needs you"
+segment) waiting on a human who is not watching, and the wake-up never arms.
+Pre-approving them lets the loop both arm a wake-up and self-terminate cleanly,
+so no segment gets pinned. Skip this if you only run Claude Code interactively;
+`doctor` treats it as advisory, never a failure.
+
 ### Codex
 
 Merge [`hooks/codex/hooks.json`](hooks/codex/hooks.json) into
@@ -241,8 +264,28 @@ nimbus-notify-broker --ttl 120   # default: drop a silent benign session after 1
   Lower it for a snappier ring; raise it to keep quiet-but-alive sessions on the
   ring longer. Floored at 5 s.
 - **Call-to-action** states (awaiting approval / awaiting input / error) always
-  hold **900 s** regardless of `--ttl`, so a job that's blocked *on you* can't
-  quietly disappear from the ring while it's still pending.
+  hold **300 s** (matching the device's 5-minute attention hold) regardless of
+  `--ttl`, so a job that's blocked *on you* can't quietly disappear from the ring
+  while it's still pending. A session whose reported `pid` was seen alive and is
+  now gone is evicted on the very next sweep, so a killed job never waits out the
+  full hold.
+
+For **unattended loops**, two more signals keep a segment from getting pinned
+(both resolve to existing states, so no firmware change is needed):
+
+- **`wakeup`**: when a session arms a scheduled wake-up (Claude Code
+  `ScheduleWakeup` / `CronCreate`, reported via a `PostToolUse` hook that
+  `install-hooks` wires for you), the turn has handed off to a timer, not to you.
+  The broker resolves that window to a benign **Done** that ages out on the short
+  TTL, so a Stop-less wake-up window never leaves a lit arc pinned, and the 60-second
+  idle notification during a wake-up wait is not mistaken for a "needs you" prompt.
+- **`heartbeat`**: a liveness ping (`led-report claude heartbeat --pid $PPID`) that
+  refreshes a session's idle timer without changing what the ring shows. A long
+  supervised turn can send it to stay off the reaper; it never relights a finished
+  or pending segment.
+
+See [docs/protocol.md](docs/protocol.md#host-event-protocol-led-report---broker)
+for the full host event vocabulary.
 
 ### Bonding the BLE link (one time)
 

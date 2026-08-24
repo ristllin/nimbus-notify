@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+Broker state-model hardening for unattended loops, plus a helper to pre-approve
+Claude Code's wake-up tools so a headless session never stalls on a prompt.
+
+### Fixed
+
+- **Stop-less wake-up windows no longer pin a ring segment.** A Claude Code loop
+  that arms a scheduled wake-up hands off to a timer; if the wake-up window closes
+  without a `Stop`, the session used to stick at Running (a lit blue arc, cleared
+  only by the idle reaper) or, worse, its 60-second idle notification mislabeled it
+  as WaitingInput and held a false amber "needs you" segment for the full 5-minute
+  call-to-action window with nobody watching. A new `wakeup` verb (wired through a
+  `PostToolUse` hook on `ScheduleWakeup` / `CronCreate`) resolves the window to a
+  benign `Done` that ages out on the short idle TTL, and an idle notification during
+  a pending wake-up is treated as a timer wait, not a human wait.
+- **Permission stays visually distinct from a human-input wait.** Any `notify:*`
+  subtype naming a permission/approval gate (not just the exact `permission_prompt`)
+  now renders amber `AwaitingApproval`, never purple `WaitingInput`, so a renamed
+  or newly-added permission subtype can't be silently downgraded to a plain question.
+
+### Added
+
+- **Per-session `heartbeat`.** `led-report <harness> heartbeat` refreshes a session's
+  idle timer without changing its state, so a long supervised turn (or an external
+  supervisor) can keep a genuinely-alive session off the idle reaper. It never
+  creates a session and never relights a retired or call-to-action segment.
+- The `nsn` host event protocol (verbs, permission classification, heartbeat, and
+  wake-up resolution, plus the idle-timeout reaper) is now documented in
+  `docs/protocol.md`.
+- **`nimbus-notify install-allow-rules`.** Pre-approves Claude Code's wake-up
+  tools (`ScheduleWakeup`, `CronCreate`, `CronDelete`, `CronList`) in
+  `~/.claude/settings.json` so an unattended loop can arm and retire its own
+  wake-ups without a permission prompt. That prompt is itself a stuck-ring cause:
+  a headless session parks in `AwaitingApproval` (an amber "needs you" segment)
+  waiting on a human who is not watching, and the wake-up never arms. The merge is
+  idempotent, backs up before writing, and only appends the wake-up rules into
+  `permissions.allow` (your other permissions are left untouched). `doctor` reports
+  whether the rules are present (advisory only, so interactive-only setups still
+  pass).
+
 ## 1.5.0 (2026-08-12)
 
 Detect the silent half-open BLE link the flap watchdog couldn't see, and a status

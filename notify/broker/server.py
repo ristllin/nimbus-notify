@@ -20,7 +20,16 @@ from pathlib import Path
 
 from notify.broker.frame import FrameSegment, HARNESS_CODE, encode_frame
 from notify.broker.segments import SegmentAllocator
-from notify.broker.session import CTA_TTL_S, SESSION_TTL_S, SessionRecord, verb_to_state
+from notify.broker.session import (
+    ACTIVITY_VERBS,
+    CTA_STATES,
+    CTA_TTL_S,
+    HEARTBEAT_VERB,
+    SESSION_TTL_S,
+    WAKEUP_VERBS,
+    SessionRecord,
+    verb_to_state,
+)
 from notify.harness.vibe import VibeWatcher
 from notify.state import State
 from notify.transport import Transport
@@ -32,6 +41,39 @@ SOCKET_PATH = Path.home() / ".local" / "share" / "nsnotify" / "broker.sock"
 BRIGHTNESS  = 30
 TTL_CHECK_S = 60.0   # upper bound on how often to sweep for stale sessions
 MIN_TTL_S   = 5.0    # floor: never reap a session that's only seconds idle
+
+
+def _resolve_wakeup(verb: str, base_state: State, prior_flag: bool) -> tuple[State, bool]:
+    """Resolve the effective state + awaiting-wakeup flag for a wake-up window (CUM-14).
+
+    Returns ``(state, flag)``:
+      - a ``wakeup`` verb  -> (Done, True): the session armed a timer, the window
+        is resolved to a benign state that ages out on the short TTL.
+      - a GENUINE call-to-action (approval / a real question / an error) while armed
+        -> (base, False): a needs-you or a failure OVERRIDES the timer wait and
+        clears the flag, so a later idle prompt cannot silently downgrade a red
+        Error or an amber approval back to Done (the worst-direction failure). The
+        idle notification itself is excluded here so the timer-wait de-escalation
+        below still applies to it.
+      - while still armed, the 60 s idle notification -> (Done, True): a wake-up
+        wait is a TIMER wait, not a human wait, so it must not pin a WaitingInput
+        CTA for the long CTA TTL.
+      - genuine activity / completion (:data:`ACTIVITY_VERBS`) -> (base, False):
+        the timer handoff is over; treat events normally again.
+      - anything else -> (base, prior_flag): carry the flag unchanged.
+    """
+    if verb in WAKEUP_VERBS:
+        return State.Done, True
+    # A real needs-you (or error) beats the timer wait: clear the flag and show it,
+    # so the idle-prompt de-escalation can't later hide it. idle_prompt is a CTA
+    # (WaitingInput) too, but it is the timer-wait signal, so it is handled below.
+    if base_state in CTA_STATES and verb != "notify:idle_prompt":
+        return base_state, False
+    if prior_flag and verb == "notify:idle_prompt":
+        return State.Done, True
+    if verb in ACTIVITY_VERBS:
+        return base_state, False
+    return base_state, prior_flag
 
 
 class Broker:
@@ -83,6 +125,15 @@ class Broker:
         if verb == "notify" and "notification_type" in msg:
             verb = f"notify:{msg['notification_type']}"
 
+        # Per-session heartbeat (CUM-14): refresh liveness ONLY. Never changes
+        # state, never creates a session, never relights a retired/CTA one, so a
+        # long-running turn (or a supervisor) can keep a genuinely-alive session
+        # off the idle reaper without disturbing what the ring shows. Nothing
+        # visual changed, so no frame push.
+        if verb == HEARTBEAT_VERB:
+            self._handle_heartbeat(session_id, int(msg.get("pid") or 0))
+            return
+
         # Feed the Vibe HITL tracker: a before_tool with no following after_tool
         # within the timeout means the tool is blocked on approval.
         if harness == "vibe" and self.vibe_watcher is not None:
@@ -91,15 +142,20 @@ class Broker:
             elif verb.startswith("after_tool"):
                 self.vibe_watcher.record_after_tool(session_id)
 
-        state = verb_to_state(verb)
+        base_state = verb_to_state(verb)
 
         with self._lock:
-            if state == State.Offline:
+            if base_state == State.Offline:
                 self._allocator.free(session_id)
             else:
+                existing = self._allocator._sessions.get(session_id)
+                prior_flag = existing.awaiting_wakeup if existing else False
+                state, wakeup_flag = _resolve_wakeup(verb, base_state, prior_flag)
+
                 rec = SessionRecord(session_id=session_id, harness=harness,
                                     cwd=cwd, state=state,
                                     pid=int(msg.get("pid") or 0))
+                rec.awaiting_wakeup = wakeup_flag
                 if rec.pid:
                     try:
                         os.kill(rec.pid, 0)
@@ -110,8 +166,10 @@ class Broker:
                         pass                          # container/foreign pid: never evict by pid
                 if session_id in self._allocator._index:
                     self._allocator.update(rec)
+                    stored = self._allocator._sessions[session_id]
+                    stored.awaiting_wakeup = wakeup_flag   # update() doesn't copy it
                     if rec.pid:   # refresh liveness identity on every event
-                        self._allocator._sessions[session_id].pid = rec.pid
+                        stored.pid = rec.pid
                 elif verb == "hitl_inferred":
                     # An INFERENCE must never CREATE a session. A vibe session
                     # killed mid-tool leaves a pending timer that would otherwise
@@ -124,6 +182,24 @@ class Broker:
                                 harness, session_id)
 
             self._push_frame()
+
+    def _handle_heartbeat(self, session_id: str, pid: int) -> None:
+        """Touch an existing session's last_event (and refresh pid liveness) so it
+        survives the idle reaper. Never creates, never changes state."""
+        with self._lock:
+            rec = self._allocator._sessions.get(session_id)
+            if rec is None:
+                return
+            rec.touch()
+            if pid:
+                rec.pid = pid
+                try:
+                    os.kill(pid, 0)
+                    rec.pid_alive_seen = True
+                except PermissionError:
+                    rec.pid_alive_seen = True
+                except (ProcessLookupError, OSError):
+                    pass
 
     # ------------------------------------------------------------------
     # Frame push

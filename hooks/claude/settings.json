@@ -35,6 +35,18 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "ScheduleWakeup|CronCreate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "led-report claude wakeup --pid $PPID",
+            "async": true
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "*",
