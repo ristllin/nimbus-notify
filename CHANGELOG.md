@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.6.0] — 2026-08-25
 
 Broker state-model hardening for unattended loops, plus a helper to pre-approve
 Claude Code's wake-up tools so a headless session never stalls on a prompt.
