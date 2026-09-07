@@ -339,6 +339,20 @@ nimbus-notify-broker --uninstall-service   # remove it
 bond. The service uses
 `--transport auto` (serial if a board is plugged at boot, else BLE).
 
+### Quick one-off (no service)
+
+To background it for just this session without installing anything — detach it
+from the terminal, log to a file, and then close the window:
+
+```bash
+nohup nimbus-notify-broker --transport auto >/tmp/nimbus-notify-broker.log 2>&1 & disown
+```
+
+Same BLE caveat: complete the one-time foreground bond first (a `nohup … &
+disown` process is too detached to finish the initial pairing — see
+[Bonding the BLE link](#bonding-the-ble-link-one-time)). Verify with
+`pgrep -f nimbus-notify-broker` or `nimbus-notify doctor`.
+
 The rest of this section documents what `--install-service` writes, if you'd
 rather manage it by hand.
 

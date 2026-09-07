@@ -112,11 +112,24 @@ Then start a real session in a wired harness and watch the ring change colour.
 
 ---
 
-## 5. Make it permanent (optional)
+## 5. Run it in the background (so you can close the terminal)
+
+The broker is a long-lived listener — keep it running while you code. Both of
+these detach it from your terminal, so it survives closing the window:
 
 ```bash
-nimbus-notify-broker --install-service   # auto-start on login (BLE: do one foreground bond FIRST)
+# Recommended — install as a service (launchd on macOS / systemd --user on Linux).
+# Starts now, restarts on crash, and comes back on every login/reboot.
+nimbus-notify-broker --install-service     # undo: --uninstall-service
+
+# One-off — detach it in the current shell, then close the terminal.
+nohup nimbus-notify-broker --transport auto >/tmp/nimbus-notify-broker.log 2>&1 & disown
 ```
+
+> **BLE first:** do the one-time foreground bond (step 3) *before* you background it —
+> a fully-detached process can't finish the macOS Just-Works handshake. Serial (USB) needs no bond.
+
+Check it's up any time with `pgrep -f nimbus-notify-broker` or `nimbus-notify doctor`.
 
 ---
 
