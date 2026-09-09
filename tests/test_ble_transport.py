@@ -35,13 +35,14 @@ class Harness:
     """Installs fake bleak objects; records every client the worker creates."""
 
     def __init__(self, monkeypatch, *, mtu=185, send_ack=True, device="scan",
-                 flap=False, probe_hang=False):
+                 flap=False, probe_hang=False, adv_local_name=None):
         self.clients    = []
         self.mtu        = mtu
         self.send_ack   = send_ack
         self.flap       = flap        # each session drops the instant it comes up
         self.probe_hang = probe_hang  # CONFIG read never answers (half-open link)
         self.device     = FakeDevice() if device == "scan" else device
+        self.adv_local_name = adv_local_name  # advertised name (may differ from GAP)
         harness = self
 
         class FakeClient:
@@ -97,6 +98,7 @@ class Harness:
 
         class _Adv:
             service_uuids = [ble.SERVICE_UUID]
+            local_name    = harness.adv_local_name
 
         monkeypatch.setattr(ble, "BleakClient", FakeClient)
         monkeypatch.setattr(ble, "BleakScanner", FakeScanner)
@@ -148,6 +150,18 @@ def test_connect_subscribes_and_sends(monkeypatch, transport_factory):
     #                                                   pairing on the encrypted
     #                                                   FRAME char (insufficient-
     #                                                   encryption ATT error)
+
+
+def test_name_filter_matches_advertised_local_name(monkeypatch, transport_factory):
+    # macOS reports a stale cached GAP name (device.name) that can differ from the
+    # LIVE advertised local_name — a board customized to "Lumi" still caches its
+    # base "Nimbus" GAP name. The name filter must match the advertised local_name,
+    # else the broker never selects the (renamed) device and stays disconnected.
+    dev = FakeDevice()
+    dev.name = "Nimbus"                         # cached GAP name (lags the adv)
+    h = Harness(monkeypatch, device=dev, adv_local_name="Lumi")
+    t = transport_factory(h, device_name="Lumi")
+    wait_until(lambda: t._connected.is_set(), msg="connect by advertised name")
 
 
 def test_is_encryption_error_classifies_pairing_failures():
