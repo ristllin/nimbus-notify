@@ -43,6 +43,23 @@ TTL_CHECK_S = 60.0   # upper bound on how often to sweep for stale sessions
 MIN_TTL_S   = 5.0    # floor: never reap a session that's only seconds idle
 
 
+def _probe_pid(rec: SessionRecord, pid: int) -> None:
+    """Record `pid` on `rec` and mark it alive-seen iff it resolves in our namespace
+    (or is alive but not ours). A pid we cannot resolve (a containerized/foreign
+    harness) is left unconfirmed, so the dead-pid reaper never false-evicts a live
+    containerized session. No-op for pid 0 (unknown)."""
+    if not pid:
+        return
+    rec.pid = pid
+    try:
+        os.kill(pid, 0)
+        rec.pid_alive_seen = True     # exists in OUR namespace
+    except PermissionError:
+        rec.pid_alive_seen = True     # alive, not ours
+    except (ProcessLookupError, OSError):
+        pass                          # container/foreign pid: never evict by pid
+
+
 def _resolve_wakeup(verb: str, base_state: State, prior_flag: bool) -> tuple[State, bool]:
     """Resolve the effective state + awaiting-wakeup flag for a wake-up window (CUM-14).
 
@@ -163,33 +180,16 @@ class Broker:
                     existing.awaiting_wakeup = False   # a real start ends any wakeup wait
                     if cwd and not existing.cwd:
                         existing.cwd = cwd
-                    _pid = int(msg.get("pid") or 0)
-                    if _pid:
-                        existing.pid = _pid
-                        try:
-                            os.kill(_pid, 0)
-                            existing.pid_alive_seen = True
-                        except PermissionError:
-                            existing.pid_alive_seen = True
-                        except (ProcessLookupError, OSError):
-                            pass
+                    _probe_pid(existing, int(msg.get("pid") or 0))
                     self._push_frame()
                     return
                 prior_flag = existing.awaiting_wakeup if existing else False
                 state, wakeup_flag = _resolve_wakeup(verb, base_state, prior_flag)
 
                 rec = SessionRecord(session_id=session_id, harness=harness,
-                                    cwd=cwd, state=state,
-                                    pid=int(msg.get("pid") or 0))
+                                    cwd=cwd, state=state)
                 rec.awaiting_wakeup = wakeup_flag
-                if rec.pid:
-                    try:
-                        os.kill(rec.pid, 0)
-                        rec.pid_alive_seen = True     # exists in OUR namespace
-                    except PermissionError:
-                        rec.pid_alive_seen = True     # alive, not ours
-                    except (ProcessLookupError, OSError):
-                        pass                          # container/foreign pid: never evict by pid
+                _probe_pid(rec, int(msg.get("pid") or 0))
                 if session_id in self._allocator._index:
                     self._allocator.update(rec)
                     stored = self._allocator._sessions[session_id]
@@ -217,15 +217,7 @@ class Broker:
             if rec is None:
                 return
             rec.touch()
-            if pid:
-                rec.pid = pid
-                try:
-                    os.kill(pid, 0)
-                    rec.pid_alive_seen = True
-                except PermissionError:
-                    rec.pid_alive_seen = True
-                except (ProcessLookupError, OSError):
-                    pass
+            _probe_pid(rec, pid)
 
     # ------------------------------------------------------------------
     # Frame push
