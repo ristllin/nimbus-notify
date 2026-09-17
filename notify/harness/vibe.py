@@ -102,9 +102,13 @@ def _synth_session_key(cwd: str) -> str:
 
 def parse_stdin() -> dict[str, Any]:
     try:
-        return json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, OSError):
+        data = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, OSError, ValueError):
         return {}
+    # Valid JSON is not necessarily an object (null, [], "s", 5): callers
+    # .get() on the result, and a hook that raises degrades the user's CLI,
+    # the exact failure class this module exists to avoid.
+    return data if isinstance(data, dict) else {}
 
 
 def build_event(verb: str) -> HarnessEvent:

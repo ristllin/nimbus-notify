@@ -293,3 +293,13 @@ def test_golden_2190_payloads(monkeypatch):
                           "post_agent_turn")
     assert agent.verb == "post_agent"
     assert verb_to_state(agent.verb) is State.Done
+
+
+@pytest.mark.parametrize("payload", ["null", "[]", '"a string"', "5", "true"])
+def test_stdin_valid_json_but_not_an_object_never_crashes(monkeypatch, payload):
+    # json.loads succeeds on these but the result has no .get(); the hook must
+    # degrade to the argv fallback, never raise into the user's CLI.
+    monkeypatch.setattr(vibe.sys, "stdin", io.StringIO(payload))
+    assert vibe.parse_stdin() == {}
+    ev = vibe.build_event("pre_tool")
+    assert ev.verb == "pre_tool"

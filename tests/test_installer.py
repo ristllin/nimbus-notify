@@ -284,3 +284,22 @@ def test_detect_vibe_version_lenient(monkeypatch):
     monkeypatch.setattr(subprocess, "run",
                         lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
     assert install._detect_vibe_version() is None
+
+
+def test_vibe_upgrade_preserves_a_user_wrapper_that_mentions_our_command(tmp_path, monkeypatch):
+    # The block matcher must key on the command VALUE starting with
+    # `led-report vibe`, not a substring anywhere in the block: a user wrapper
+    # (or even a comment naming the tool) is THEIRS and must survive.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    hooks_file = tmp_path / ".vibe" / "hooks.toml"
+    hooks_file.parent.mkdir(parents=True)
+    hooks_file.write_text(
+        '# my wrapper around led-report vibe\n'
+        '[[hooks]]\nname = "user-wrap"\ntype = "pre_tool"\nmatch = "*"\n'
+        'command = "my-env-wrapper.sh led-report vibe pre_tool"\ntimeout = 5.0\n')
+    install.install_vibe(dry_run=False)
+    tomllib = _toml()
+    hooks = tomllib.loads(hooks_file.read_text())["hooks"]
+    cmds = {h["command"] for h in hooks}
+    assert "my-env-wrapper.sh led-report vibe pre_tool" in cmds   # wrapper survived
+    assert sum(1 for c in cmds if c.startswith("led-report vibe")) == 3  # ours added once

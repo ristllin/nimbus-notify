@@ -19,7 +19,10 @@ Use Bash to find the plugin root (the directory containing this `commands/` fold
 ```bash
 # The plugin was installed from a local path; find it from the command file location.
 # Typical location: ~/.claude/plugins/cache/<author>/nsnotify/<version>/
-find ~/.claude/plugins/cache -name "nsnotify-setup.md" 2>/dev/null | head -1 | xargs -I{} dirname {} | xargs -I{} dirname {}
+# Version-sort and take the HIGHEST version: multiple cached versions can
+# coexist, and `head -1` used to pick whichever the filesystem listed first,
+# which could pip-install a stale host package over a current one.
+find ~/.claude/plugins/cache -name "nsnotify-setup.md" 2>/dev/null | sort -V | tail -1 | xargs -I{} dirname {} | xargs -I{} dirname {}
 ```
 
 Store the result as PLUGIN_ROOT.

@@ -70,6 +70,16 @@ CODEX_HOOKS = [
 ]
 
 
+
+def _write_config(path, text):
+    """Atomic config write: tempfile in the same directory + os.replace, so a
+    kill mid-write can never truncate a user's hooks/settings file (the vibe
+    path is a full-file REWRITE now, not an append). The .bak the callers
+    write first stays the recovery path for content mistakes."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
 def _claude_group(verb: str, matcher: str | None) -> dict:
     grp: dict = {}
     if matcher is not None:
@@ -199,7 +209,7 @@ def _write_allow_rules(path: Path, rules: list[str], dry_run: bool) -> bool:
         bak = path.with_suffix(path.suffix + ".bak")
         bak.write_text(path.read_text())
         print(f"    (backed up -> {bak})")
-    path.write_text(json.dumps(existing, indent=2) + "\n")
+    _write_config(path, json.dumps(existing, indent=2) + "\n")
     return True
 
 
@@ -283,7 +293,7 @@ def _write_json_config(path: Path, ours_hooks: dict, harness: str, dry_run: bool
         bak = path.with_suffix(path.suffix + ".bak")
         bak.write_text(path.read_text())
         print(f"    (backed up -> {bak})")
-    path.write_text(json.dumps(existing, indent=2) + "\n")
+    _write_config(path, json.dumps(existing, indent=2) + "\n")
     return True
 
 
@@ -390,10 +400,25 @@ def _remove_vibe_flag(text: str) -> str:
     return out
 
 
+def _block_is_ours(block: list[str]) -> bool:
+    """A [[hooks]] block is ours only when its command VALUE starts with
+    `led-report vibe`. A substring match over the whole block used to also
+    swallow a user's wrapper hook (`command = "wrap.sh led-report vibe ..."`)
+    or even a comment mentioning the tool, silently deleting their config."""
+    for line in block:
+        s = line.strip()
+        if s.startswith("command") and "=" in s:
+            value = s.split("=", 1)[1].strip().strip("\"'")
+            return value.startswith(_VIBE_SENTINEL)
+    return False
+
+
 def _strip_ns_hook_blocks(text: str) -> str:
-    """Remove every `[[hooks]]` block we manage (command contains `led-report vibe`),
-    old-name or new-name, preserving unrelated hooks and comments. This is what makes
-    a re-run an idempotent UPGRADE of stale ns-* blocks instead of a skip-on-sentinel."""
+    """Remove every `[[hooks]]` block we manage (command VALUE starts with
+    `led-report vibe`), old-name or new-name, preserving unrelated hooks and
+    comments (including a user's own wrapper that merely mentions the tool).
+    This is what makes a re-run an idempotent UPGRADE of stale ns-* blocks
+    instead of a skip-on-sentinel."""
     lines = text.splitlines()
     out: list[str] = []
     i, n = 0, len(lines)
@@ -409,7 +434,7 @@ def _strip_ns_hook_blocks(text: str) -> str:
                     break   # a top-level [section] header ends the array-of-tables
                 block.append(lines[j])
                 j += 1
-            if _VIBE_SENTINEL in "\n".join(block):
+            if _block_is_ours(block):
                 while out and out[-1].strip() == "":   # trim a blank line before ours
                     out.pop()
                 i = j
@@ -447,7 +472,7 @@ def _write_text_config(path: Path, existing: str, after: str, label: str,
         bak = path.with_suffix(path.suffix + ".bak")
         bak.write_text(existing)
         print(f"    (backed up -> {bak})")
-    path.write_text(after)
+    _write_config(path, after)
     return True
 
 

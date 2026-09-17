@@ -2,6 +2,10 @@
 
 ## [1.7.0] (2026-09-17)
 
+**Upgrading: restart the broker after installing.** A broker started under an
+older release maps the renamed verbs through its unknown-verb default, so
+segments show Running but never Done or Error until the process restarts.
+
 Mistral Vibe v2.21.0+ support. Vibe 2.21.0 renamed every hook type
 (`before_tool` -> `pre_tool`, `after_tool` -> `post_tool`, `post_agent_turn` ->
 `post_agent`, the `hook_event_name` payload value too) and removed
