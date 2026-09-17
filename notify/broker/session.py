@@ -71,8 +71,12 @@ HEARTBEAT_VERB = "heartbeat"
 
 # Verbs that prove the session resumed genuine work (or finished a turn) and so
 # clear a pending wake-up window: the timer handoff is over, treat events normally.
+# Both the current Vibe hook names (pre_tool / post_tool / post_agent) and the
+# pre-2.21 aliases (before_tool / after_tool / post_agent_turn) count.
 ACTIVITY_VERBS: frozenset = frozenset({
-    "start", "running", "before_tool", "after_tool:success", "done", "post_agent_turn",
+    "start", "running", "done",
+    "pre_tool", "post_tool:success", "post_agent",
+    "before_tool", "after_tool:success", "post_agent_turn",
 })
 
 # Substrings that mark an unmapped ``notify:*`` subtype as a PERMISSION/approval
@@ -126,10 +130,22 @@ _VERB_TO_STATE: dict[str, State] = {
     "end":                State.Offline,
     # Progress
     "running":            State.Running,
-    "before_tool":        State.Running,    # Vibe: tool about to execute
-    "after_tool:success": State.Running,    # Vibe: tool done, more may follow
-    "after_tool:failure": State.Error,
-    "post_agent_turn":    State.Done,       # Vibe: turn complete
+    # Vibe v2.21.0+ hook verbs (normalized in harness/vibe.py from the payload's
+    # hook_event_name). Without post_tool:* -> non-default states and
+    # post_agent -> Done, the broker's unknown-verb default (Running) would leave a
+    # Vibe session stuck blue forever (it would never reach Done or show an Error).
+    "pre_tool":           State.Running,    # Vibe: tool about to execute
+    "post_tool:success":  State.Running,    # Vibe: tool done, more may follow
+    "post_tool:failure":  State.Error,      # Vibe: tool failed
+    "post_tool:cancelled":State.Running,    # Vibe: user interrupted the tool mid-run
+    "post_agent":         State.Done,       # Vibe: turn complete
+    # Pre-2.21 aliases, kept so a hand-edited old hooks.toml (or an old led-report)
+    # still maps correctly.
+    "before_tool":        State.Running,    # -> pre_tool
+    "after_tool:success": State.Running,    # -> post_tool:success
+    "after_tool:failure": State.Error,      # -> post_tool:failure
+    "after_tool:cancelled": State.Running,
+    "post_agent_turn":    State.Done,       # -> post_agent
     # Completion
     "done":               State.Done,
     "error":              State.Error,

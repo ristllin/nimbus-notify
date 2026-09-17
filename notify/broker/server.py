@@ -134,12 +134,16 @@ class Broker:
             self._handle_heartbeat(session_id, int(msg.get("pid") or 0))
             return
 
-        # Feed the Vibe HITL tracker: a before_tool with no following after_tool
-        # within the timeout means the tool is blocked on approval.
+        # Feed the Vibe HITL tracker: a pre_tool with no following post_tool within
+        # the timeout means the tool is blocked on approval. A user-DENIED tool
+        # never fires post_tool, so a turn end (post_agent / done / end) clears the
+        # pending timer too — otherwise pre_tool -> deny -> Done would still fire a
+        # false amber "hitl_inferred" 120 s later and pin it for the CTA TTL.
         if harness == "vibe" and self.vibe_watcher is not None:
-            if verb == "before_tool":
+            if verb in ("pre_tool", "before_tool"):
                 self.vibe_watcher.record_before_tool(session_id)
-            elif verb.startswith("after_tool"):
+            elif (verb.startswith("post_tool") or verb.startswith("after_tool")
+                  or verb in ("post_agent", "post_agent_turn", "done", "end")):
                 self.vibe_watcher.record_after_tool(session_id)
 
         base_state = verb_to_state(verb)
@@ -149,6 +153,28 @@ class Broker:
                 self._allocator.free(session_id)
             else:
                 existing = self._allocator._sessions.get(session_id)
+                # 'start' registers-if-absent and NEVER downgrades a live session:
+                # Vibe's session dir and its lease can appear AFTER hooks already
+                # moved the session to Running/Done, and a late watcher 'start'
+                # must not reset it to Idle. It may still ENRICH an empty cwd (the
+                # lease start often fires before meta.json names the cwd).
+                if verb == "start" and existing is not None:
+                    existing.touch()
+                    existing.awaiting_wakeup = False   # a real start ends any wakeup wait
+                    if cwd and not existing.cwd:
+                        existing.cwd = cwd
+                    _pid = int(msg.get("pid") or 0)
+                    if _pid:
+                        existing.pid = _pid
+                        try:
+                            os.kill(_pid, 0)
+                            existing.pid_alive_seen = True
+                        except PermissionError:
+                            existing.pid_alive_seen = True
+                        except (ProcessLookupError, OSError):
+                            pass
+                    self._push_frame()
+                    return
                 prior_flag = existing.awaiting_wakeup if existing else False
                 state, wakeup_flag = _resolve_wakeup(verb, base_state, prior_flag)
 
