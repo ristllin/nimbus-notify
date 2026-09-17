@@ -325,9 +325,14 @@ class BleTransport:
         def _match(device, adv) -> bool:
             uuids = [u.lower() for u in (adv.service_uuids or [])]
             has_svc = SERVICE_UUID in uuids
+            # adv.local_name is the name in this advertisement's scan response;
+            # device.name is CoreBluetooth's cached GAP name, which is empty for
+            # a peripheral this host has never connected to. Check both, or a
+            # factory-fresh board can never be matched by name.
+            name = adv.local_name or device.name or ""
             if want is not None:
-                return has_svc and (device.name or "") == want
-            return has_svc or (device.name or "") == DEVICE_NAME
+                return has_svc and name == want
+            return has_svc or name == DEVICE_NAME
         return await BleakScanner.find_device_by_filter(
             _match, timeout=SCAN_TIMEOUT_S)
 
