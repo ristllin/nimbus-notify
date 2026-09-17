@@ -1,0 +1,1 @@
+{"session_id":"ae828734-2384-986a-3b83-2d9a36603c57","transcript_path":"/home/user/.vibe/logs/session/session_20260916_171800_ae828734/messages.jsonl","cwd":"/home/user/vibe-capture","parent_session_id":null,"hook_event_name":"before_tool","tool_name":"bash","tool_call_id":"l3K7Tug4n","tool_input":{"command":"ls","timeout":null}}

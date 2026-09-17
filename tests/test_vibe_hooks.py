@@ -24,7 +24,7 @@ from notify.broker.session import _VERB_TO_STATE, verb_to_state
 from notify.harness.vibe import build_event, normalize_hook_name
 from notify.state import State
 
-FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 class _NullTransport:
