@@ -2,7 +2,7 @@
 
 Vibe exposes no session start/stop hook, so the broker runs a VibeWatcher.  These
 tests drive its scan/HITL logic synchronously (never start the daemon thread) with
-an injected `root` (fully hermetic — never touches the real ~/.vibe), and use the
+an injected `root` (fully hermetic; never touches the real ~/.vibe), and use the
 REAL meta.json shape (cwd nested at environment.working_directory, end_time stamped
 on every save).  End is NEVER derived from end_time.
 """
@@ -115,7 +115,7 @@ def test_non_session_dirs_never_register(tmp_path):
     events: list[dict] = []
     w = VibeWatcher(events.append, root=tmp_path)
     # the 2.25 lease dir, a .last_session pointer dir, a dir with no meta, and a
-    # session_ dir whose meta has no session_id — none of these are real sessions
+    # session_ dir whose meta has no session_id; none of these are real sessions
     (tmp_path / "active").mkdir()
     (tmp_path / "active" / ".registry").write_bytes(b"")
     (tmp_path / ".last_session").mkdir()

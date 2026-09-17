@@ -201,19 +201,26 @@ notify = ["led-report", "codex-notify"]
 ### Mistral Vibe
 
 Vibe has no native session start/stop hook, so the broker also runs a
-background watcher over `~/.vibe/logs/session/` to detect new sessions and
+background watcher over the Vibe session-log root to detect sessions and
 infer human-in-the-loop waits (if a tool call starts but doesn't finish
-within a timeout, that's treated as "awaiting approval").
+within a timeout, that's treated as "awaiting approval"). On Vibe v2.25+ it
+uses the session lease (`<save_dir>/active/<id>.lock`) for a precise session
+start and end.
 
-Enable experimental hooks in `~/.vibe/config.toml`:
+The simplest way to wire the hooks is the installer (idempotent; it also
+upgrades a stale file in place):
 
-```toml
-enable_experimental_hooks = true
+```bash
+nimbus-notify install-hooks --harness vibe
 ```
 
-Then merge [`hooks/vibe/hooks.toml`](hooks/vibe/hooks.toml) into
-`~/.vibe/hooks.toml` (requires Vibe v2.15.0+ for `before_tool` /
-`after_tool` / `post_agent_turn`).
+That writes the current Vibe v2.21.0+ hook names (`pre_tool` / `post_tool` /
+`post_agent`) into `~/.vibe/hooks.toml`. For Vibe **older than 2.21** add
+`--vibe-legacy` (it writes `before_tool` / `after_tool` / `post_agent_turn`
+plus `enable_experimental_hooks = true`, which 2.21 removed). Run
+`nimbus-notify doctor` afterwards; it detects the installed Vibe version and
+tells you exactly what to run if the hook names don't match. The reference
+file is [`hooks/vibe/hooks.toml`](hooks/vibe/hooks.toml).
 
 ### Claude Code plugin
 

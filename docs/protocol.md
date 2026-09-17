@@ -86,10 +86,14 @@ maps the `verb` to a wire `State` (see `notify/broker/session.py`). A device
 implementor can ignore this section; it matters to anyone wiring a new harness or
 an unattended loop.
 
-Canonical verbs: `start` (Idle), `running` / `before_tool` / `after_tool:success`
-(Running), `done` / `post_agent_turn` (Done), `error` / `after_tool:failure`
-(Error), `approval` (AwaitingApproval), `end` (Offline), and Claude `notify` events
-folded to `notify:<notification_type>`.
+Canonical verbs: `start` (Idle), `running` / `pre_tool` / `post_tool:success`
+(Running), `done` / `post_agent` (Done), `error` / `post_tool:failure` (Error),
+`approval` (AwaitingApproval), `end` (Offline), and Claude `notify` events folded to
+`notify:<notification_type>`. The pre-2.21 Vibe names `before_tool` / `after_tool` /
+`post_agent_turn` are accepted as aliases and normalized (the harness adapter takes
+the verb from the hook payload's `hook_event_name`, so any Vibe naming and either
+executor maps correctly); a Vibe session with an empty `session_id` (the unified
+harness) is keyed by a stable hash of its `cwd` so it is never dropped.
 
 Three rules keep an *unattended* session from pinning a ring segment (all resolve
 to existing wire States, so no device change is required):

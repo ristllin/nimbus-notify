@@ -47,7 +47,7 @@ def _make_vibe_tree(tmp_path, dirs):
 
 def test_first_scan_baselines_historical_dirs(tmp_path):
     # No-flood on (re)start: EVERY pre-existing dir is baselined silently, whatever
-    # its end_time — end_time is no longer a liveness signal (Vibe stamps it on every
+    # its end_time; end_time is no longer a liveness signal (Vibe stamps it on every
     # save). A session live at startup is caught by its ongoing hook events / lease.
     root = _make_vibe_tree(tmp_path, {
         "session_old1": {"session_id": "o1", "end_time": "2026-07-03T00:00:00Z",

@@ -137,7 +137,7 @@ class Broker:
         # Feed the Vibe HITL tracker: a pre_tool with no following post_tool within
         # the timeout means the tool is blocked on approval. A user-DENIED tool
         # never fires post_tool, so a turn end (post_agent / done / end) clears the
-        # pending timer too — otherwise pre_tool -> deny -> Done would still fire a
+        # pending timer too; otherwise pre_tool -> deny -> Done would still fire a
         # false amber "hitl_inferred" 120 s later and pin it for the CTA TTL.
         if harness == "vibe" and self.vibe_watcher is not None:
             if verb in ("pre_tool", "before_tool"):

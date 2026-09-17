@@ -312,7 +312,7 @@ def install_codex(dry_run: bool) -> None:
 # Current hook names (Vibe v2.21.0+). This is the DEFAULT the installer writes for
 # everyone: 2.21 is months old and the only pre-2.21 install seen is our own bench.
 # NOTE: post_agent takes NO `match` (Vibe's model validator rejects match on
-# post_agent). `--pid $PPID` is best-effort liveness — under the shell executor it
+# post_agent). `--pid $PPID` is best-effort liveness: under the shell executor it
 # expands to the Vibe pid; under the unified harness (no shell) it stays literal and
 # led-report degrades it to pid=0.
 VIBE_HOOKS_TOML = """\
@@ -673,7 +673,7 @@ def doctor() -> int:
         vstr  = ".".join(map(str, ver)) if ver else "unknown"
         if old and ver is not None and ver >= (2, 21, 0):
             print(f"  [FAIL] vibe hooks.toml uses pre-2.21 names {sorted(old)}, but Vibe "
-                  f"{vstr} needs pre_tool/post_tool/post_agent — ZERO hooks will load. "
+                  f"{vstr} needs pre_tool/post_tool/post_agent; ZERO hooks will load. "
                   "Run: nimbus-notify install-hooks --harness vibe")
             ok = False
         elif new and ver is not None and ver < (2, 21, 0):
@@ -682,7 +682,7 @@ def doctor() -> int:
                   "Run: nimbus-notify install-hooks --harness vibe --vibe-legacy")
             ok = False
         elif old and new:
-            print(f"  [warn] vibe hooks.toml mixes old + new hook names {sorted(types)} — "
+            print(f"  [warn] vibe hooks.toml mixes old + new hook names {sorted(types)}: "
                   "Vibe warns on each name it doesn't recognize every session start. "
                   "Re-run: nimbus-notify install-hooks --harness vibe")
         else:

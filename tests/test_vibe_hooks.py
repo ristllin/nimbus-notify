@@ -119,7 +119,7 @@ def test_required_verb_states():
     "post_agent_turn",
 ])
 def test_every_vibe_verb_is_explicitly_mapped(verb):
-    # An unmapped verb would fall through to the Running default — which is exactly
+    # An unmapped verb would fall through to the Running default, which is exactly
     # the bug (post_agent silently -> Running -> never Done). Assert each is EXPLICIT.
     assert verb in _VERB_TO_STATE, f"{verb!r} is not explicitly mapped"
 

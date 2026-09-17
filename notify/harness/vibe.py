@@ -3,7 +3,7 @@ Phase 4 — Mistral Vibe harness adapter.
 
 Two surfaces:
 
-(a) hooks.toml — fires pre_tool / post_tool / post_agent (Vibe v2.21.0+ names;
+(a) hooks.toml: fires pre_tool / post_tool / post_agent (Vibe v2.21.0+ names;
     the pre-2.21 names before_tool / after_tool / post_agent_turn are still
     accepted here and normalized).  These write stdin JSON like other harnesses.
     The payload's ``hook_event_name`` is the SOURCE OF TRUTH for the verb, so the
@@ -17,7 +17,7 @@ Two surfaces:
     fields); build_event synthesizes a stable per-cwd key so the event is never
     dropped by the broker's empty-session_id guard.
 
-(b) Session watcher — Vibe has NO session start/stop hook.  The watcher
+(b) Session watcher: Vibe has NO session start/stop hook.  The watcher
     (VibeWatcher below) runs as a background thread in the broker.
       * Tier 1 (every version): watches the session-log root for real session
         dirs (name ``session_*`` with a meta.json that has a session_id) and
@@ -26,7 +26,7 @@ Two surfaces:
         "ended"); end comes from the idle TTL / dead-pid eviction in the broker.
       * Tier 2 (Vibe >= 2.25, detected by the presence of the ``active/`` session-
         lease dir): the flock'd lease ``active/<session_id>.lock`` is the precise
-        start/end signal — present = live (acquired at session open, before the
+        start/end signal: present = live (acquired at session open, before the
         first turn), gone = ended, a stale lock after a crash detectable via the
         pid it holds.  This gives an early start and a real end without $PPID.
 
@@ -81,7 +81,7 @@ _HOOK_ALIASES: dict[str, str] = {
 # Every hook event name we recognize (old + new).  A payload hook_event_name
 # OUTSIDE this set is a FUTURE upstream rename: fall back to the CLI argv verb
 # (what the installer wrote) so a later rename can never crash us or silently
-# mis-map — the argv verb degrades gracefully, never an exception.
+# mis-map; the argv verb degrades gracefully, never an exception.
 _KNOWN_HOOK_NAMES = frozenset(_HOOK_ALIASES) | frozenset(_HOOK_ALIASES.values())
 
 
@@ -199,7 +199,7 @@ class VibeWatcher:
 
     def start(self) -> None:
         # Only skip when Vibe isn't installed at all.  When Vibe IS present but
-        # hasn't created its session root yet (fresh install), start anyway — the
+        # hasn't created its session root yet (fresh install), start anyway; the
         # scans tolerate the dir appearing later, so the first session is detected.
         if not VIBE_HOME.exists():
             log.debug("vibe not installed (%s absent) — watcher idle", VIBE_HOME)
@@ -271,7 +271,7 @@ class VibeWatcher:
         """Yield (dir_name, meta) for REAL session dirs only: name starts with
         ``session_`` AND has a meta.json carrying a session_id.  Excludes the
         ``active/`` lease dir and the ``.last_session`` pointer (neither is a
-        session_* dir with meta) — kills the phantom-segment class."""
+        session_* dir with meta); kills the phantom-segment class."""
         try:
             entries = list(self._root.iterdir())
         except OSError:
@@ -313,7 +313,7 @@ class VibeWatcher:
         # on a (re)start. A session genuinely live at startup is caught by its
         # ongoing hook events (led-report -> broker) and, on >= 2.25, by its live
         # lease. end_time is deliberately NOT consulted for liveness (Vibe stamps
-        # it on every save, so it never means "ended") — the old end_time-based
+        # it on every save, so it never means "ended"); the old end_time-based
         # "live" test is exactly the bug this replaces.
         if not self._primed:
             for name, meta in current.items():

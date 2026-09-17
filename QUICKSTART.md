@@ -74,9 +74,10 @@ wired there never fires).
 `~/.codex/config.toml`: `[features]\nhooks = true` and
 `notify = ["led-report", "codex-notify"]`.
 
-**Vibe** — set `enable_experimental_hooks = true` in `~/.vibe/config.toml` and merge
-`hooks/vibe/hooks.toml` (v2.15.0+). Vibe has no start/stop hook; the broker's session
-watcher supplies those.
+**Vibe**: run `nimbus-notify install-hooks --harness vibe` (writes the Vibe v2.21.0+
+hook names `pre_tool` / `post_tool` / `post_agent` into `~/.vibe/hooks.toml`; add
+`--vibe-legacy` for Vibe < 2.21). Vibe has no start/stop hook; the broker's session
+watcher supplies those (and the v2.25+ session lease gives a precise start/end).
 
 </details>
 

@@ -88,11 +88,11 @@ hooks = true
 notify = ["led-report", "codex-notify"]
 ```
 
-**Mistral Vibe** — add to `~/.vibe/config.toml`:
-```toml
-enable_experimental_hooks = true
+**Mistral Vibe**: run the installer (it writes the current Vibe v2.21.0+ hook names and is idempotent):
+```bash
+nimbus-notify install-hooks --harness vibe
 ```
-Then merge `$PLUGIN_ROOT/hooks/vibe/hooks.toml` into `~/.vibe/hooks.toml`.
+For Vibe older than 2.21 add `--vibe-legacy` (writes the pre-2.21 names plus `enable_experimental_hooks`). Then run `nimbus-notify doctor` to confirm the names match the installed Vibe version.
 
 ### 6 — Remind about the device
 
