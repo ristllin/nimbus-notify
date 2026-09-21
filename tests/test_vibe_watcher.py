@@ -8,11 +8,13 @@ on every save).  End is NEVER derived from end_time.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
 
-from notify.harness.vibe import VibeWatcher
+import notify.harness.vibe as vibe
+from notify.harness.vibe import VibeWatcher, _synth_session_key, build_event
 
 
 def _mk_session(root, name, session_id, cwd, end_time="2026-09-16T17:43:02Z"):
@@ -34,6 +36,21 @@ def _mk_lease(root, session_id, pid):
         {"lease_version": 1, "session_id": session_id, "process_id": pid,
          "acquired_at": "2026-09-16T17:42:58.000Z"}))
     return active / f"{session_id}.lock"
+
+
+def _mk_unified(root, session_id, cwd, origin=None):
+    """A 2.25+ unified-harness session's meta at unified/<id>/meta.json (UUID-named,
+    NOT session_*, so Tier 1 never sees it; its lease is keyed by the cwd-hash its
+    hooks synthesize).  The lock lives in active/ like any lease (call _mk_lease
+    with the SAME id).  cwd may be empty to model meta landing a beat before the
+    cwd is known; origin defaults to cwd (Vibe's origin_directory fallback)."""
+    d = root / "unified" / session_id
+    d.mkdir(parents=True, exist_ok=True)
+    meta = {"session_id": session_id,
+            "environment": {"working_directory": cwd},
+            "origin_directory": origin or cwd}
+    (d / "meta.json").write_text(json.dumps(meta))
+    return d
 
 
 # ------------------------------------------------------------------
@@ -189,6 +206,137 @@ def test_no_lease_dir_is_tier1_only(tmp_path):
     w = VibeWatcher(events.append, root=tmp_path)
     w._scan_leases()                         # no active/ dir -> no-op, no crash
     assert events == []
+
+
+# ------------------------------------------------------------------
+# Tier 2: unified-harness lease (Vibe >= 2.25): keyed by the SAME
+# vibe-cwd-<hash> the hooks synthesize (NOT the raw uuid), heartbeated
+# while live, ref-counted across same-cwd leases.
+# ------------------------------------------------------------------
+
+def test_unified_lease_keys_by_cwd_hash_not_uuid(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    _mk_unified(tmp_path, "uuid-unified", "/u/proj")   # unified meta -> cwd
+    _mk_lease(tmp_path, "uuid-unified", os.getpid())   # live lease (our pid)
+    w._scan_leases()
+    assert len(events) == 1
+    assert events[0]["verb"] == "start"
+    assert events[0]["session_id"] == _synth_session_key("/u/proj")
+    assert events[0]["session_id"].startswith("vibe-cwd-")
+    assert events[0]["session_id"] != "uuid-unified"        # NOT the raw uuid
+    assert events[0]["cwd"] == "/u/proj"
+    assert events[0]["pid"] == os.getpid()
+
+
+def test_unified_lease_key_matches_hook_synthesized_key(tmp_path, monkeypatch):
+    # The crux: the watcher lease key MUST equal the key build_event synthesizes
+    # for a unified hook payload with the same cwd, or the lease and the hook
+    # events split into a phantom duplicate instead of collapsing to one segment.
+    cwd = "/u/collapse"
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    _mk_unified(tmp_path, "uuid-x", cwd)
+    _mk_lease(tmp_path, "uuid-x", os.getpid())
+    w._scan_leases()
+    watcher_key = events[0]["session_id"]
+
+    monkeypatch.setattr(vibe.sys, "stdin",
+                        io.StringIO(json.dumps({"cwd": cwd, "hook_event_name": "pre_tool"})))
+    hook_key = build_event("pre_tool").session_id
+
+    assert watcher_key == hook_key
+    assert watcher_key.startswith("vibe-cwd-")
+
+
+def test_unified_live_lease_emits_heartbeat_not_duplicate_start(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    _mk_unified(tmp_path, "uuid-hb", "/u/hb")
+    _mk_lease(tmp_path, "uuid-hb", os.getpid())
+    w._scan_leases()                         # start
+    w._scan_leases()                         # still live -> heartbeat, NOT a 2nd start
+    assert [e["verb"] for e in events] == ["start", "heartbeat"]
+    assert events[-1]["session_id"] == _synth_session_key("/u/hb")
+    assert events[-1]["pid"] == os.getpid()  # heartbeat carries the pid too
+
+
+def test_unified_lease_release_fires_end_under_cwd_key(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    _mk_unified(tmp_path, "uuid-end", "/u/end")
+    lock = _mk_lease(tmp_path, "uuid-end", os.getpid())
+    w._scan_leases()                         # start
+    lock.unlink()                            # session closed -> lease released
+    w._scan_leases()                         # end
+    assert [e["verb"] for e in events] == ["start", "end"]
+    assert events[-1]["session_id"] == _synth_session_key("/u/end")   # cwd key, not uuid
+
+
+def test_two_unified_leases_same_cwd_collapse_end_when_last_gone(tmp_path):
+    # Two unified sessions in the SAME cwd share one vibe-cwd-<hash>: ONE start, and
+    # the key ends only when the LAST lease releases (recompute-each-sweep is the
+    # ref count; no explicit counter needed).
+    cwd = "/u/shared"
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    _mk_unified(tmp_path, "uuid-a", cwd)
+    _mk_unified(tmp_path, "uuid-b", cwd)
+    lock_a = _mk_lease(tmp_path, "uuid-a", os.getpid())
+    _mk_lease(tmp_path, "uuid-b", os.getpid())
+    w._scan_leases()                         # ONE start for the shared key
+    assert [e["verb"] for e in events] == ["start"]
+    assert events[0]["session_id"] == _synth_session_key(cwd)
+
+    lock_a.unlink()                          # one gone, one still live
+    w._scan_leases()                         # heartbeat, NO end
+    assert [e["verb"] for e in events] == ["start", "heartbeat"]
+
+    (tmp_path / "active" / "uuid-b.lock").unlink()   # last one gone
+    w._scan_leases()                         # NOW end
+    assert [e["verb"] for e in events] == ["start", "heartbeat", "end"]
+    assert events[-1]["session_id"] == _synth_session_key(cwd)
+
+
+def test_unified_lease_without_cwd_in_meta_is_deferred(tmp_path):
+    # meta.json can land a beat after the lock; until it names a cwd the key would
+    # be bogus, so a cwd-less unified lease is DEFERRED (not mis-keyed), then picked
+    # up on the sweep after the cwd appears.
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    _mk_unified(tmp_path, "uuid-late", "")   # meta present but NO cwd yet
+    _mk_lease(tmp_path, "uuid-late", os.getpid())
+    w._scan_leases()
+    assert events == []                      # deferred, not registered under a bad key
+
+    _mk_unified(tmp_path, "uuid-late", "/late/cwd")   # cwd finally written
+    w._scan_leases()
+    assert [e["verb"] for e in events] == ["start"]
+    assert events[0]["session_id"] == _synth_session_key("/late/cwd")
+
+
+def test_unified_lease_cwd_falls_back_to_origin_directory(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    _mk_unified(tmp_path, "uuid-orig", "", origin="/from/origin")   # cwd empty, origin set
+    _mk_lease(tmp_path, "uuid-orig", os.getpid())
+    w._scan_leases()
+    assert len(events) == 1
+    assert events[0]["cwd"] == "/from/origin"
+    assert events[0]["session_id"] == _synth_session_key("/from/origin")
+
+
+def test_legacy_lease_keeps_uuid_key_and_heartbeats_when_live(tmp_path):
+    # A legacy (non-unified) session has a session_* dir and NO unified/ meta: its
+    # lease keeps the RAW uuid key (unchanged), and it too heartbeats while live.
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    _mk_session(tmp_path, "session_legacy", "legacy-uuid", "/legacy/cwd")
+    _mk_lease(tmp_path, "legacy-uuid", os.getpid())
+    w._scan_leases()                         # start
+    w._scan_leases()                         # heartbeat
+    assert [e["verb"] for e in events] == ["start", "heartbeat"]
+    assert all(e["session_id"] == "legacy-uuid" for e in events)   # raw uuid, not cwd-hash
 
 
 # ------------------------------------------------------------------

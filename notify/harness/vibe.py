@@ -29,6 +29,13 @@ Two surfaces:
         start/end signal: present = live (acquired at session open, before the
         first turn), gone = ended, a stale lock after a crash detectable via the
         pid it holds.  This gives an early start and a real end without $PPID.
+        For a UNIFIED-harness session (2.25+, whose hooks carry no session_id) the
+        lease is keyed by the SAME vibe-cwd-<hash> its hooks synthesize (cwd read
+        from ``unified/<id>/meta.json``), so the lease and the hook events collapse
+        to ONE segment instead of a phantom duplicate; a legacy session keeps its
+        raw session_id.  Each live lease is also HEARTBEATed every sweep so a live-
+        but-idle unified session (model thinking / an approval pending, i.e. no
+        hooks firing) is not idle-TTL-evicted mid-turn.
 
 Known limitations:
   - HITL (ask_user_question / an approval prompt): not exposed by any hook.  The
@@ -62,6 +69,8 @@ VIBE_SESSIONS  = VIBE_HOME / "logs" / "session"   # fallback session-log root
 VIBE_CONFIG    = VIBE_HOME / "config.toml"
 
 _SESSION_DIR_PREFIX = "session_"   # real session dirs: session_<date>_<time>_<id8>
+_UNIFIED_DIR_NAME   = "unified"    # 2.25+ unified-harness sessions: unified/<uuid>/meta.json
+                                   # (UUID-named, NOT session_*, so Tier 1 never sees them)
 _LEASE_DIR_NAME     = "active"     # 2.25+ session-lease dir (holds <id>.lock + .registry)
 _LEASE_SUFFIX       = ".lock"
 
@@ -172,6 +181,8 @@ class VibeWatcher:
     session dir; never derives "end" from meta.json.end_time.
     Tier 2 (Vibe >= 2.25): the ``active/<id>.lock`` session lease is the precise
     start/end signal (present = live, gone = ended, stale-after-crash via pid).
+    A unified-harness lease is reconciled under the same vibe-cwd-<hash> key its
+    hooks use, and every live lease is heartbeated so an idle turn isn't evicted.
 
     Call start() from the broker setup; the watcher runs in a daemon thread.
     """
@@ -184,9 +195,14 @@ class VibeWatcher:
         self._ended:     set[str] = set()  # dirs we've fired "end" for (never re-fire)
         self._id_by_dir: dict[str, str] = {}  # dir name -> meta session_id
         self._cwd_by_dir: dict[str, str] = {}  # dir name -> last cwd (re-read on change)
-        # Tier 2 lease tracking
-        self._known_leases: set[str] = set()  # session_ids seen live via a lease
-        self._lease_cwd:    dict[str, str] = {}  # lease session_id -> cwd (from meta)
+        # Tier 2 lease tracking, keyed by DISPLAY key (NOT the raw lease uuid): a
+        # unified-harness session (2.25+) is keyed by vibe-cwd-<hash> — the SAME
+        # key its hooks synthesize — so the lease and the hook events collapse to
+        # ONE segment; a legacy session keeps its raw session_id.  Live keys are
+        # recomputed from the lease dir every sweep, so N same-cwd unified leases
+        # map to one key that only ends when the LAST of them releases.
+        self._known_leases: set[str] = set()   # display keys seen live via a lease
+        self._lease_cwd:    dict[str, str] = {}  # display key -> cwd last sent
         self._primed  = False
         self._thread: threading.Thread | None = None
         self._stop    = threading.Event()
@@ -390,53 +406,110 @@ class VibeWatcher:
         except (OSError, json.JSONDecodeError, ValueError, TypeError):
             return 0
 
-    def _resolve_lease_cwd(self, sid: str) -> str:
-        """cwd for a lease session_id, from the matching session dir's meta (the
-        lease lock itself carries no cwd; the meta may not exist yet). Fresh scan."""
-        for _name, meta in self._iter_session_dirs():
-            if meta.get("session_id") == sid:
-                return self._meta_cwd(meta)
-        return ""
+    def _read_unified_meta(self, sid: str) -> dict:
+        """meta.json for a unified-harness session at ``unified/<sid>/meta.json``
+        (Vibe 2.25+).  Empty dict when absent (a legacy session, or the meta not
+        written yet)."""
+        try:
+            text = (self._root / _UNIFIED_DIR_NAME / sid / "meta.json").read_text()
+            data = json.loads(text)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _resolve_lease(self, sid: str) -> tuple[str, bool]:
+        """Resolve ``(cwd, is_unified)`` for a lease session_id (the lock itself
+        carries no cwd).  A unified-harness session (2.25+) has
+        ``unified/<sid>/meta.json`` — cwd from environment.working_directory (or
+        origin_directory), is_unified True — so the caller keys it by the SAME
+        vibe-cwd-<hash> its hooks synthesize.  A legacy session's cwd comes from
+        its ``session_*`` dir meta, is_unified False, so it keeps its raw
+        session_id key.  ``("", False)`` when neither is found yet."""
+        meta = self._read_unified_meta(sid)
+        if meta:
+            cwd = self._meta_cwd(meta) or str(meta.get("origin_directory") or "")
+            return cwd, True
+        for _name, m in self._iter_session_dirs():
+            if m.get("session_id") == sid:
+                return self._meta_cwd(m), False
+        return "", False
+
+    @staticmethod
+    def _lease_session_key(sid: str, cwd: str, is_unified: bool) -> str:
+        """The broker session key for a lease: the per-cwd synth key for a unified
+        session (so its lease and its hook events collapse to ONE segment), else
+        the raw session_id for a legacy session."""
+        return _synth_session_key(cwd) if is_unified else sid
 
     def _scan_leases(self) -> None:
         lease_dir = self._lease_dir()
         if not lease_dir.is_dir():
             return   # pre-2.25 (no lease dir): Tier 1 only
 
-        live = self._live_leases()
+        # Aggregate every live lease by its DISPLAY key (unified -> vibe-cwd-<hash>,
+        # legacy -> raw session_id).  Recomputing from the lease dir each sweep is
+        # what ref-counts same-cwd unified leases: the key stays live while ANY of
+        # them holds a lock, and only vanishes when the LAST one releases.  A
+        # unified lease whose cwd isn't named yet (meta.json lands a beat after the
+        # lock) is DEFERRED — its key is cwd-derived, so registering it now would
+        # bucket it under a bogus key; the next sweep picks it up once meta exists.
+        live_keys: dict[str, dict[str, Any]] = {}
+        for sid, pid in self._live_leases().items():
+            cwd, is_unified = self._resolve_lease(sid)
+            if is_unified and not cwd:
+                continue                        # defer until meta.json names the cwd
+            key  = self._lease_session_key(sid, cwd, is_unified)
+            slot = live_keys.setdefault(key, {"cwd": cwd, "pid": pid})
+            if cwd and not slot["cwd"]:
+                slot["cwd"] = cwd               # prefer a known cwd from any lease
+            if pid and not slot["pid"]:
+                slot["pid"] = pid               # prefer a live pid from any lease
 
-        # Newly-live leases -> register-if-absent start (the precise, early signal,
-        # before the first turn).  Idle registration: the lease is a whole-session
-        # hold, so it means "session open", not "actively running"; pre_tool drives
-        # Running.  A start never downgrades an already-running session (broker).
-        for sid in live.keys() - self._known_leases:
-            self._known_leases.add(sid)
-            cwd = self._resolve_lease_cwd(sid)
-            self._lease_cwd[sid] = cwd          # remember what we sent
+        # Snapshot the previously-known keys BEFORE mutating, so the new/live/gone
+        # partition is computed against a stable set.
+        prev     = set(self._known_leases)
+        live_set = set(live_keys)
+
+        # Newly-live keys -> register-if-absent start (the precise, early signal,
+        # before the first turn).  A whole-session lease means "session open", not
+        # "running"; pre_tool drives Running.  A start never downgrades a live
+        # session (broker) — it only enriches an empty cwd + refreshes the pid.
+        for key in live_set - prev:
+            slot = live_keys[key]
+            self._known_leases.add(key)
+            self._lease_cwd[key] = slot["cwd"]
             ev: dict[str, Any] = {
-                "harness": "vibe", "session_id": sid, "cwd": cwd, "verb": "start",
+                "harness": "vibe", "session_id": key, "cwd": slot["cwd"], "verb": "start",
             }
-            if live[sid]:
-                ev["pid"] = live[sid]
+            if slot["pid"]:
+                ev["pid"] = slot["pid"]
             self._cb(ev)
 
-        # cwd may only settle AFTER the lease appears (meta written on first save):
-        # re-fire a start with the cwd once, when it goes from empty to known.
-        for sid in live.keys() & self._known_leases:
-            if self._lease_cwd.get(sid):
-                continue                        # already known and sent
-            cwd = self._resolve_lease_cwd(sid)
-            if cwd:
-                self._lease_cwd[sid] = cwd
-                self._cb({"harness": "vibe", "session_id": sid, "cwd": cwd, "verb": "start"})
+        # Still-live keys -> (1) a one-shot cwd-settle re-start if the cwd only just
+        # became known (legacy: meta written after the lock), then (2) a heartbeat
+        # so a live-but-IDLE session (model thinking / approval pending -> no hooks
+        # firing) survives the broker's idle TTL instead of being reaped mid-turn.
+        for key in live_set & prev:
+            slot = live_keys[key]
+            if slot["cwd"] and not self._lease_cwd.get(key):
+                self._lease_cwd[key] = slot["cwd"]
+                self._cb({"harness": "vibe", "session_id": key,
+                          "cwd": slot["cwd"], "verb": "start"})
+            hb: dict[str, Any] = {
+                "harness": "vibe", "session_id": key, "cwd": slot["cwd"],
+                "verb": "heartbeat",
+            }
+            if slot["pid"]:
+                hb["pid"] = slot["pid"]
+            self._cb(hb)
 
-        # Leases that vanished (released on close, or a stale lock now culled) ->
-        # end.  This is the precise Tier 2 end signal, no $PPID needed.
-        for sid in list(self._known_leases - live.keys()):
-            self._known_leases.discard(sid)
-            self._lease_cwd.pop(sid, None)
-            self._cb({"harness": "vibe", "session_id": sid, "cwd": "", "verb": "end"})
-            self.record_after_tool(sid)
+        # Vanished keys (every lease for the key released on close, or a stale lock
+        # now culled) -> end.  The precise Tier 2 end signal, no $PPID needed.
+        for key in prev - live_set:
+            self._known_leases.discard(key)
+            self._lease_cwd.pop(key, None)
+            self._cb({"harness": "vibe", "session_id": key, "cwd": "", "verb": "end"})
+            self.record_after_tool(key)
 
 
 def _pid_alive(pid: int) -> bool:
