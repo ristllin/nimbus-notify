@@ -74,9 +74,10 @@ wired there never fires).
 `~/.codex/config.toml`: `[features]\nhooks = true` and
 `notify = ["led-report", "codex-notify"]`.
 
-**Vibe** — set `enable_experimental_hooks = true` in `~/.vibe/config.toml` and merge
-`hooks/vibe/hooks.toml` (v2.15.0+). Vibe has no start/stop hook; the broker's session
-watcher supplies those.
+**Vibe**: run `nimbus-notify install-hooks --harness vibe` (writes the Vibe v2.21.0+
+hook names `pre_tool` / `post_tool` / `post_agent` into `~/.vibe/hooks.toml`; add
+`--vibe-legacy` for Vibe < 2.21). Vibe has no start/stop hook; the broker's session
+watcher supplies those (and the v2.25+ session lease gives a precise start/end).
 
 </details>
 
@@ -112,11 +113,24 @@ Then start a real session in a wired harness and watch the ring change colour.
 
 ---
 
-## 5. Make it permanent (optional)
+## 5. Run it in the background (so you can close the terminal)
+
+The broker is a long-lived listener — keep it running while you code. Both of
+these detach it from your terminal, so it survives closing the window:
 
 ```bash
-nimbus-notify-broker --install-service   # auto-start on login (BLE: do one foreground bond FIRST)
+# Recommended — install as a service (launchd on macOS / systemd --user on Linux).
+# Starts now, restarts on crash, and comes back on every login/reboot.
+nimbus-notify-broker --install-service     # undo: --uninstall-service
+
+# One-off — detach it in the current shell, then close the terminal.
+nohup nimbus-notify-broker --transport auto >/tmp/nimbus-notify-broker.log 2>&1 & disown
 ```
+
+> **BLE first:** do the one-time foreground bond (step 3) *before* you background it —
+> a fully-detached process can't finish the macOS Just-Works handshake. Serial (USB) needs no bond.
+
+Check it's up any time with `pgrep -f nimbus-notify-broker` or `nimbus-notify doctor`.
 
 ---
 

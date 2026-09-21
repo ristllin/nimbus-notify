@@ -325,13 +325,11 @@ class BleTransport:
         def _match(device, adv) -> bool:
             uuids = [u.lower() for u in (adv.service_uuids or [])]
             has_svc = SERVICE_UUID in uuids
-            # macOS reports the peripheral's CACHED GAP name as device.name, which
-            # can differ from the name in the LIVE advertisement: a board whose
-            # advertised local name was customized (e.g. "Lumi") still caches its
-            # base "Nimbus" GAP name, so device.name lags behind. The advertised
-            # local_name is the authoritative current identity — match on it first,
-            # falling back to device.name only when the adv carries no local name.
-            name = (getattr(adv, "local_name", None) or device.name or "")
+            # adv.local_name is the name in this advertisement's scan response;
+            # device.name is CoreBluetooth's cached GAP name, which is empty for
+            # a peripheral this host has never connected to. Check both, or a
+            # factory-fresh board can never be matched by name.
+            name = adv.local_name or device.name or ""
             if want is not None:
                 return has_svc and name == want
             return has_svc or name == DEVICE_NAME

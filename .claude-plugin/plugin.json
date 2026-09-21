@@ -1,6 +1,6 @@
 {
   "name": "nsnotify",
-  "version": "1.3.1",
-  "description": "Nimbus Notify — LED ring status indicator for concurrent AI coding-agent sessions (Claude Code, Codex, Mistral Vibe).",
+  "version": "1.7.0",
+  "description": "Nimbus Notify: LED ring status indicator for concurrent AI coding-agent sessions (Claude Code, Codex, Mistral Vibe).",
   "author": { "name": "Roy Darnell" }
 }

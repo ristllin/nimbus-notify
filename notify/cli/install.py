@@ -29,6 +29,7 @@ import argparse
 import difflib
 import json
 import os
+import re
 import socket
 import sys
 from pathlib import Path
@@ -68,6 +69,16 @@ CODEX_HOOKS = [
     ("SessionEnd", None, "end"),
 ]
 
+
+
+def _write_config(path, text):
+    """Atomic config write: tempfile in the same directory + os.replace, so a
+    kill mid-write can never truncate a user's hooks/settings file (the vibe
+    path is a full-file REWRITE now, not an append). The .bak the callers
+    write first stays the recovery path for content mistakes."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
 
 def _claude_group(verb: str, matcher: str | None) -> dict:
     grp: dict = {}
@@ -198,7 +209,7 @@ def _write_allow_rules(path: Path, rules: list[str], dry_run: bool) -> bool:
         bak = path.with_suffix(path.suffix + ".bak")
         bak.write_text(path.read_text())
         print(f"    (backed up -> {bak})")
-    path.write_text(json.dumps(existing, indent=2) + "\n")
+    _write_config(path, json.dumps(existing, indent=2) + "\n")
     return True
 
 
@@ -282,7 +293,7 @@ def _write_json_config(path: Path, ours_hooks: dict, harness: str, dry_run: bool
         bak = path.with_suffix(path.suffix + ".bak")
         bak.write_text(path.read_text())
         print(f"    (backed up -> {bak})")
-    path.write_text(json.dumps(existing, indent=2) + "\n")
+    _write_config(path, json.dumps(existing, indent=2) + "\n")
     return True
 
 
@@ -308,25 +319,55 @@ def install_codex(dry_run: bool) -> None:
     print("   SECOND, duplicate ring segment every turn. hooks.json already covers Codex.)\n")
 
 
+# Current hook names (Vibe v2.21.0+). This is the DEFAULT the installer writes for
+# everyone: 2.21 is months old and the only pre-2.21 install seen is our own bench.
+# NOTE: post_agent takes NO `match` (Vibe's model validator rejects match on
+# post_agent). `--pid $PPID` is best-effort liveness: under the shell executor it
+# expands to the Vibe pid; under the unified harness (no shell) it stays literal and
+# led-report degrades it to pid=0.
 VIBE_HOOKS_TOML = """\
+[[hooks]]
+name    = "ns-pre-tool"
+type    = "pre_tool"
+match   = "*"
+command = "led-report vibe pre_tool --pid $PPID"
+timeout = 5.0
+
+[[hooks]]
+name    = "ns-post-tool"
+type    = "post_tool"
+match   = "*"
+command = "led-report vibe post_tool --pid $PPID"
+timeout = 5.0
+
+[[hooks]]
+name    = "ns-post-agent"
+type    = "post_agent"
+command = "led-report vibe post_agent --pid $PPID"
+timeout = 5.0
+"""
+
+# Pre-2.21 hook names, written only under `--vibe-legacy` (Vibe < 2.21, e.g. 2.19).
+# These require `enable_experimental_hooks = true` in config.toml.
+VIBE_HOOKS_TOML_LEGACY = """\
 [[hooks]]
 name    = "ns-before-tool"
 type    = "before_tool"
 match   = "*"
-command = "led-report vibe before_tool"
+command = "led-report vibe before_tool --pid $PPID"
 timeout = 5.0
 
 [[hooks]]
 name    = "ns-after-tool"
 type    = "after_tool"
 match   = "*"
-command = "led-report vibe after_tool"
+command = "led-report vibe after_tool --pid $PPID"
 timeout = 5.0
 
 [[hooks]]
 name    = "ns-post-turn"
 type    = "post_agent_turn"
-command = "led-report vibe post_agent_turn"
+command = "led-report vibe post_agent_turn --pid $PPID"
 timeout = 5.0
 """
 
@@ -347,17 +388,81 @@ def _insert_vibe_flag(text: str) -> str:
     return text.rstrip("\n") + ("\n" if text else "") + _VIBE_FLAG + "\n"
 
 
-def _write_vibe_hooks(path: Path, dry_run: bool) -> bool:
-    """Append our [[hooks]] blocks to ~/.vibe/hooks.toml; idempotent, dry-run aware.
-    Returns True if a write happened (or would under --dry-run)."""
-    existing = path.read_text() if path.exists() else ""
-    if _VIBE_SENTINEL in existing:
-        print(f"  = {path}: already wired.")
+def _remove_vibe_flag(text: str) -> str:
+    """Drop any standalone `enable_experimental_hooks = true` line (removed in Vibe
+    2.21; silently ignored there, but we don't write it in the default path so a
+    legacy->new upgrade leaves a clean config). Idempotent."""
+    kept = [ln for ln in text.splitlines()
+            if ln.strip().replace(" ", "") != _VIBE_FLAG.replace(" ", "")]
+    out = "\n".join(kept)
+    if text.endswith("\n") and out:
+        out += "\n"
+    return out
+
+
+def _block_is_ours(block: list[str]) -> bool:
+    """A [[hooks]] block is ours only when its command VALUE starts with
+    `led-report vibe`. A substring match over the whole block used to also
+    swallow a user's wrapper hook (`command = "wrap.sh led-report vibe ..."`)
+    or even a comment mentioning the tool, silently deleting their config."""
+    for line in block:
+        s = line.strip()
+        if s.startswith("command") and "=" in s:
+            value = s.split("=", 1)[1].strip().strip("\"'")
+            return value.startswith(_VIBE_SENTINEL)
+    return False
+
+
+def _strip_ns_hook_blocks(text: str) -> str:
+    """Remove every `[[hooks]]` block we manage (command VALUE starts with
+    `led-report vibe`), old-name or new-name, preserving unrelated hooks and
+    comments (including a user's own wrapper that merely mentions the tool).
+    This is what makes a re-run an idempotent UPGRADE of stale ns-* blocks
+    instead of a skip-on-sentinel."""
+    lines = text.splitlines()
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        if lines[i].strip() == "[[hooks]]":
+            j = i + 1
+            block = [lines[i]]
+            while j < n:
+                stripped = lines[j].lstrip()
+                if stripped.startswith("[["):
+                    break
+                if stripped.startswith("[") and not stripped.startswith("[["):
+                    break   # a top-level [section] header ends the array-of-tables
+                block.append(lines[j])
+                j += 1
+            if _block_is_ours(block):
+                while out and out[-1].strip() == "":   # trim a blank line before ours
+                    out.pop()
+                i = j
+                continue
+            out.extend(block)
+            i = j
+            continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out)
+
+
+def _compose_vibe_hooks(existing: str, template: str) -> str:
+    """The desired hooks.toml: user content with our ns-* blocks replaced by
+    `template`. Deterministic, so re-running produces identical bytes (idempotent)."""
+    base = _strip_ns_hook_blocks(existing).rstrip("\n")
+    body = base + "\n\n" + template if base else template
+    return body if body.endswith("\n") else body + "\n"
+
+
+def _write_text_config(path: Path, existing: str, after: str, label: str,
+                       dry_run: bool) -> bool:
+    """Shared write path: no-op if unchanged; dry-run diff; backup + write otherwise."""
+    if after == existing:
+        print(f"  = {path}: {label} already current.")
         return False
-    after = existing.rstrip("\n") + ("\n\n" if existing else "") + VIBE_HOOKS_TOML
-    print(f"  + {path}: appending ns-before-tool, ns-after-tool, ns-post-turn")
+    print(f"  + {path}: {label}")
     if dry_run:
-        import difflib
         diff = difflib.unified_diff(existing.splitlines(), after.splitlines(),
                                     fromfile=str(path), tofile=str(path) + " (new)", lineterm="")
         print("\n".join("      " + ln for ln in diff))
@@ -367,38 +472,46 @@ def _write_vibe_hooks(path: Path, dry_run: bool) -> bool:
         bak = path.with_suffix(path.suffix + ".bak")
         bak.write_text(existing)
         print(f"    (backed up -> {bak})")
-    path.write_text(after)
+    _write_config(path, after)
     return True
 
 
-def _write_vibe_config_flag(path: Path, dry_run: bool) -> bool:
-    """Insert `enable_experimental_hooks = true` into ~/.vibe/config.toml.
-    Idempotent, dry-run aware. Returns True if a write happened (or would)."""
+def _write_vibe_hooks(path: Path, dry_run: bool, legacy: bool = False) -> bool:
+    """Write our [[hooks]] blocks to ~/.vibe/hooks.toml (current names by default,
+    pre-2.21 names under --vibe-legacy). Idempotent, dry-run aware, and an UPGRADE:
+    a re-run rewrites stale ns-* blocks of the other naming instead of skipping."""
     existing = path.read_text() if path.exists() else ""
-    if _VIBE_FLAG in existing:
-        print(f"  = {path}: flag already present.")
-        return False
-    after = _insert_vibe_flag(existing)
-    print(f"  + {path}: inserting enable_experimental_hooks = true")
-    if dry_run:
-        import difflib
-        diff = difflib.unified_diff(existing.splitlines(), after.splitlines(),
-                                    fromfile=str(path), tofile=str(path) + " (new)", lineterm="")
-        print("\n".join("      " + ln for ln in diff))
-        return True
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        bak = path.with_suffix(path.suffix + ".bak")
-        bak.write_text(existing)
-        print(f"    (backed up -> {bak})")
-    path.write_text(after)
-    return True
+    template = VIBE_HOOKS_TOML_LEGACY if legacy else VIBE_HOOKS_TOML
+    after = _compose_vibe_hooks(existing, template)
+    names = "ns-before-tool/ns-after-tool/ns-post-turn (legacy)" if legacy \
+            else "ns-pre-tool/ns-post-tool/ns-post-agent"
+    return _write_text_config(path, existing, after, f"{names}", dry_run)
 
 
-def install_vibe(dry_run: bool) -> None:
+def _write_vibe_config_flag(path: Path, dry_run: bool, legacy: bool = False) -> bool:
+    """Manage `enable_experimental_hooks` in ~/.vibe/config.toml: insert under
+    --vibe-legacy (pre-2.21 needs it), remove it in the default path (2.21+ removed
+    it). Idempotent, dry-run aware."""
+    existing = path.read_text() if path.exists() else ""
+    if legacy:
+        after = _insert_vibe_flag(existing)
+        label = "enable_experimental_hooks = true (legacy)"
+    else:
+        after = _remove_vibe_flag(existing)
+        label = "removed stale enable_experimental_hooks"
+        if after == existing:
+            return False   # nothing to remove; stay silent (default path, common)
+    return _write_text_config(path, existing, after, label, dry_run)
+
+
+def install_vibe(dry_run: bool, legacy: bool = False) -> None:
     print("Mistral Vibe (~/.vibe/hooks.toml + ~/.vibe/config.toml):")
-    _write_vibe_hooks(Path.home() / ".vibe" / "hooks.toml", dry_run)
-    _write_vibe_config_flag(Path.home() / ".vibe" / "config.toml", dry_run)
+    _write_vibe_hooks(Path.home() / ".vibe" / "hooks.toml", dry_run, legacy=legacy)
+    _write_vibe_config_flag(Path.home() / ".vibe" / "config.toml", dry_run, legacy=legacy)
+    if legacy:
+        print("  (--vibe-legacy: pre-2.21 hook names + enable_experimental_hooks, for Vibe < 2.21.)")
+    else:
+        print("  (Vibe v2.21.0+ hook names. For Vibe < 2.21 re-run with --vibe-legacy.)")
     print("  (Vibe has no start/stop hooks — the broker's VibeWatcher supplies those.)")
 
 
@@ -413,6 +526,52 @@ def _hooks_wired(path: Path, harness: str) -> bool:
         return f"led-report {harness}" in path.read_text()
     except OSError:
         return False
+
+
+# --- Vibe version + hook-name drift detection (doctor) ----------------------
+
+_OLD_VIBE_TYPES = frozenset({"before_tool", "after_tool", "post_agent_turn"})
+_NEW_VIBE_TYPES = frozenset({"pre_tool", "post_tool", "post_agent"})
+
+
+def _detect_vibe_version() -> tuple[int, int, int] | None:
+    """Best-effort (major, minor, patch) of the installed Vibe. Lenient: `vibe
+    --version` prints `<prog> X.Y.Z` where the prefix depends on argv[0], so we
+    just search for the first N.N.N in stdout/stderr. None if Vibe isn't found."""
+    import subprocess
+    try:
+        out = subprocess.run(["vibe", "--version"], capture_output=True,
+                             text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", (out.stdout or "") + " " + (out.stderr or ""))
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def _vibe_hook_types(path: Path) -> set[str]:
+    """The `type` values declared in a Vibe hooks.toml. Prefers a real TOML parse,
+    falls back to a line scan for a hand-edited file tomllib can't load."""
+    try:
+        text = path.read_text()
+    except OSError:
+        return set()
+    types: set[str] = set()
+    try:
+        import tomllib
+        for h in (tomllib.loads(text).get("hooks") or []):
+            if isinstance(h, dict) and h.get("type"):
+                types.add(str(h["type"]))
+        if types:
+            return types
+    except Exception:
+        pass
+    for ln in text.splitlines():
+        m = re.match(r"""\s*type\s*=\s*["']([^"']+)["']""", ln)
+        if m:
+            types.add(m.group(1))
+    return types
 
 
 # ---------------------------------------------------------------------------
@@ -527,13 +686,45 @@ def doctor() -> int:
         print(f"  [{'ok' if allowed else '..'}]   claude wake-up allow-rules "
               f"{note}: {claude_settings}")
 
-    vibe_cfg = Path.home() / ".vibe" / "config.toml"
-    if vibe_cfg.exists():
-        flag_set = _VIBE_FLAG in vibe_cfg.read_text()
-        print(f"  [{'ok' if flag_set else 'no'}]   vibe enable_experimental_hooks "
-              f"{'set' if flag_set else 'NOT set (hooks will not fire)'}: {vibe_cfg}")
-        if not flag_set:
+    # Vibe hook-name drift vs the installed version (the CUM-414 root cause: a
+    # Vibe upgrade past 2.21 silently rejects the old names and loads 0 hooks).
+    vibe_hooks = Path.home() / ".vibe" / "hooks.toml"
+    vibe_cfg   = Path.home() / ".vibe" / "config.toml"
+    if vibe_hooks.exists() and _hooks_wired(vibe_hooks, "vibe"):
+        types = _vibe_hook_types(vibe_hooks)
+        old   = types & _OLD_VIBE_TYPES
+        new   = types & _NEW_VIBE_TYPES
+        ver   = _detect_vibe_version()
+        vstr  = ".".join(map(str, ver)) if ver else "unknown"
+        if old and ver is not None and ver >= (2, 21, 0):
+            print(f"  [FAIL] vibe hooks.toml uses pre-2.21 names {sorted(old)}, but Vibe "
+                  f"{vstr} needs pre_tool/post_tool/post_agent; ZERO hooks will load. "
+                  "Run: nimbus-notify install-hooks --harness vibe")
             ok = False
+        elif new and ver is not None and ver < (2, 21, 0):
+            print(f"  [FAIL] vibe hooks.toml uses v2.21+ names {sorted(new)}, but Vibe "
+                  f"{vstr} is pre-2.21 and needs before_tool/after_tool/post_agent_turn. "
+                  "Run: nimbus-notify install-hooks --harness vibe --vibe-legacy")
+            ok = False
+        elif old and new:
+            print(f"  [warn] vibe hooks.toml mixes old + new hook names {sorted(types)}: "
+                  "Vibe warns on each name it doesn't recognize every session start. "
+                  "Re-run: nimbus-notify install-hooks --harness vibe")
+        else:
+            kind = "v2.21+" if new else "legacy (pre-2.21)" if old else "unknown"
+            print(f"  [ok]   vibe hooks.toml uses {kind} names {sorted(old | new) or sorted(types)} "
+                  f"(installed Vibe {vstr}): {vibe_hooks}")
+        # The experimental flag matters ONLY for pre-2.21 (legacy) names; 2.21+
+        # removed it (silently ignored). Only fail when legacy names actually need it.
+        flag_set = vibe_cfg.exists() and _VIBE_FLAG in vibe_cfg.read_text()
+        if old and not new:
+            print(f"  [{'ok' if flag_set else 'no'}]   vibe enable_experimental_hooks "
+                  f"{'set' if flag_set else 'NOT set (legacy hooks will not fire)'}: {vibe_cfg}")
+            if not flag_set:
+                ok = False
+        elif new and flag_set:
+            print("  [..]   vibe enable_experimental_hooks is set but Vibe 2.21+ ignores it "
+                  f"(harmless). Re-run install-hooks --harness vibe to tidy: {vibe_cfg}")
 
     print("-" * 20)
     print("All good — start a session and watch the device." if ok
@@ -553,6 +744,10 @@ def main(argv=None) -> int:
     ih = sub.add_parser("install-hooks", help="merge led-report hooks into a harness config")
     ih.add_argument("--harness", choices=["claude", "codex", "vibe", "all"], default="all")
     ih.add_argument("--dry-run", action="store_true", help="print the changes, write nothing")
+    ih.add_argument("--vibe-legacy", action="store_true",
+                    help="write the pre-2.21 Vibe hook names (before_tool/after_tool/"
+                         "post_agent_turn) + enable_experimental_hooks, for Vibe < 2.21. "
+                         "The default writes the current names (pre_tool/post_tool/post_agent).")
 
     ar = sub.add_parser("install-allow-rules",
                         help="pre-approve Claude Code wake-up tools (ScheduleWakeup, "
@@ -574,7 +769,7 @@ def main(argv=None) -> int:
         if which in ("codex", "all"):
             install_codex(args.dry_run)
         if which in ("vibe", "all"):
-            install_vibe(args.dry_run)
+            install_vibe(args.dry_run, legacy=args.vibe_legacy)
         if not args.dry_run:
             print("\nDone. Verify:  nimbus-notify doctor")
         return 0

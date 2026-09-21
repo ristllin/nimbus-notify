@@ -17,7 +17,11 @@ Usage:
   `heartbeat`: refresh this session's idle timer only (no state change); keeps a
                 long-running-but-alive turn off the idle reaper.
   led-report codex-notify '<json>'   # Codex notify-program mode: json in argv
-  led-report vibe    (before_tool|after_tool:success|after_tool:failure|post_agent_turn|start|end)
+  led-report vibe    (pre_tool|post_tool|post_agent)   # Vibe v2.21.0+ names; the
+                     # pre-2.21 names (before_tool|after_tool|post_agent_turn) are
+                     # still accepted and normalized. The verb from the payload's
+                     # hook_event_name wins over this argv verb (any harness, any
+                     # naming); tool_status is appended for post_tool.
 """
 from __future__ import annotations
 

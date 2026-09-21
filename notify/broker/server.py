@@ -43,6 +43,23 @@ TTL_CHECK_S = 60.0   # upper bound on how often to sweep for stale sessions
 MIN_TTL_S   = 5.0    # floor: never reap a session that's only seconds idle
 
 
+def _probe_pid(rec: SessionRecord, pid: int) -> None:
+    """Record `pid` on `rec` and mark it alive-seen iff it resolves in our namespace
+    (or is alive but not ours). A pid we cannot resolve (a containerized/foreign
+    harness) is left unconfirmed, so the dead-pid reaper never false-evicts a live
+    containerized session. No-op for pid 0 (unknown)."""
+    if not pid:
+        return
+    rec.pid = pid
+    try:
+        os.kill(pid, 0)
+        rec.pid_alive_seen = True     # exists in OUR namespace
+    except PermissionError:
+        rec.pid_alive_seen = True     # alive, not ours
+    except (ProcessLookupError, OSError):
+        pass                          # container/foreign pid: never evict by pid
+
+
 def _resolve_wakeup(verb: str, base_state: State, prior_flag: bool) -> tuple[State, bool]:
     """Resolve the effective state + awaiting-wakeup flag for a wake-up window (CUM-14).
 
@@ -134,12 +151,16 @@ class Broker:
             self._handle_heartbeat(session_id, int(msg.get("pid") or 0))
             return
 
-        # Feed the Vibe HITL tracker: a before_tool with no following after_tool
-        # within the timeout means the tool is blocked on approval.
+        # Feed the Vibe HITL tracker: a pre_tool with no following post_tool within
+        # the timeout means the tool is blocked on approval. A user-DENIED tool
+        # never fires post_tool, so a turn end (post_agent / done / end) clears the
+        # pending timer too; otherwise pre_tool -> deny -> Done would still fire a
+        # false amber "hitl_inferred" 120 s later and pin it for the CTA TTL.
         if harness == "vibe" and self.vibe_watcher is not None:
-            if verb == "before_tool":
+            if verb in ("pre_tool", "before_tool"):
                 self.vibe_watcher.record_before_tool(session_id)
-            elif verb.startswith("after_tool"):
+            elif (verb.startswith("post_tool") or verb.startswith("after_tool")
+                  or verb in ("post_agent", "post_agent_turn", "done", "end")):
                 self.vibe_watcher.record_after_tool(session_id)
 
         base_state = verb_to_state(verb)
@@ -149,21 +170,26 @@ class Broker:
                 self._allocator.free(session_id)
             else:
                 existing = self._allocator._sessions.get(session_id)
+                # 'start' registers-if-absent and NEVER downgrades a live session:
+                # Vibe's session dir and its lease can appear AFTER hooks already
+                # moved the session to Running/Done, and a late watcher 'start'
+                # must not reset it to Idle. It may still ENRICH an empty cwd (the
+                # lease start often fires before meta.json names the cwd).
+                if verb == "start" and existing is not None:
+                    existing.touch()
+                    existing.awaiting_wakeup = False   # a real start ends any wakeup wait
+                    if cwd and not existing.cwd:
+                        existing.cwd = cwd
+                    _probe_pid(existing, int(msg.get("pid") or 0))
+                    self._push_frame()
+                    return
                 prior_flag = existing.awaiting_wakeup if existing else False
                 state, wakeup_flag = _resolve_wakeup(verb, base_state, prior_flag)
 
                 rec = SessionRecord(session_id=session_id, harness=harness,
-                                    cwd=cwd, state=state,
-                                    pid=int(msg.get("pid") or 0))
+                                    cwd=cwd, state=state)
                 rec.awaiting_wakeup = wakeup_flag
-                if rec.pid:
-                    try:
-                        os.kill(rec.pid, 0)
-                        rec.pid_alive_seen = True     # exists in OUR namespace
-                    except PermissionError:
-                        rec.pid_alive_seen = True     # alive, not ours
-                    except (ProcessLookupError, OSError):
-                        pass                          # container/foreign pid: never evict by pid
+                _probe_pid(rec, int(msg.get("pid") or 0))
                 if session_id in self._allocator._index:
                     self._allocator.update(rec)
                     stored = self._allocator._sessions[session_id]
@@ -191,15 +217,7 @@ class Broker:
             if rec is None:
                 return
             rec.touch()
-            if pid:
-                rec.pid = pid
-                try:
-                    os.kill(pid, 0)
-                    rec.pid_alive_seen = True
-                except PermissionError:
-                    rec.pid_alive_seen = True
-                except (ProcessLookupError, OSError):
-                    pass
+            _probe_pid(rec, pid)
 
     # ------------------------------------------------------------------
     # Frame push

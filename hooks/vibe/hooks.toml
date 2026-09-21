@@ -1,26 +1,34 @@
 # Drop into ~/.vibe/hooks.toml  (or <project>/.vibe/hooks.toml for project scope)
-# Requires: enable_experimental_hooks = true  in ~/.vibe/config.toml
-# Vibe v2.15.0+ (before_tool / after_tool / post_agent_turn)
+# Vibe v2.21.0+ hook names: pre_tool / post_tool / post_agent.
+#   (Vibe < 2.21 used before_tool / after_tool / post_agent_turn and required
+#    enable_experimental_hooks = true in ~/.vibe/config.toml. For those, run
+#    `nimbus-notify install-hooks --harness vibe --vibe-legacy`.)
 #
-# NOTE: Vibe has no session start/stop hooks.  Session detection is handled
-# by the VibeWatcher in the broker (watches ~/.vibe/logs/session/ for new dirs).
+# NOTE: Vibe has no session start/stop hooks.  Session detection is handled by the
+# VibeWatcher in the broker (Tier 1: the session-log root; Tier 2 on Vibe >= 2.25:
+# the active/<id>.lock session lease).
+#
+# `--pid $PPID` is best-effort liveness: under Vibe's shell executor it expands to
+# the Vibe pid (the broker then evicts the segment the instant Vibe exits); under
+# the unified harness (no shell) it stays literal and led-report degrades it to 0.
+# post_agent takes no `match` (Vibe rejects match on post_agent).
 
 [[hooks]]
-name    = "ns-before-tool"
-type    = "before_tool"
+name    = "ns-pre-tool"
+type    = "pre_tool"
 match   = "*"
-command = "led-report vibe before_tool"
+command = "led-report vibe pre_tool --pid $PPID"
 timeout = 5.0
 
 [[hooks]]
-name    = "ns-after-tool"
-type    = "after_tool"
+name    = "ns-post-tool"
+type    = "post_tool"
 match   = "*"
-command = "led-report vibe after_tool"
+command = "led-report vibe post_tool --pid $PPID"
 timeout = 5.0
 
 [[hooks]]
-name    = "ns-post-turn"
-type    = "post_agent_turn"
-command = "led-report vibe post_agent_turn"
+name    = "ns-post-agent"
+type    = "post_agent"
+command = "led-report vibe post_agent --pid $PPID"
 timeout = 5.0

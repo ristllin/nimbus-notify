@@ -1,5 +1,58 @@
 # Changelog
 
+## [1.7.0] (2026-09-17)
+
+**Upgrading: restart the broker after installing.** A broker started under an
+older release maps the renamed verbs through its unknown-verb default, so
+segments show Running but never Done or Error until the process restarts.
+
+Mistral Vibe v2.21.0+ support. Vibe 2.21.0 renamed every hook type
+(`before_tool` -> `pre_tool`, `after_tool` -> `post_tool`, `post_agent_turn` ->
+`post_agent`, the `hook_event_name` payload value too) and removed
+`enable_experimental_hooks`. The old names we shipped fail validation on any Vibe
+>= 2.21, so zero hooks loaded and the ring stayed dark. This release fixes that and
+hardens the session watcher.
+
+### Fixed
+
+- **Vibe >= 2.21 loads our hooks again.** The harness adapter now takes the verb
+  from the hook payload's `hook_event_name` and normalizes it, so the broker maps
+  correctly under any Vibe naming and either executor (the legacy shell executor or
+  the unified harness). `post_agent` now resolves to `Done` (the broker's
+  unknown-verb default is `Running`, so before this a Vibe turn never showed Done),
+  and `post_tool:failure` to `Error`.
+- **The unified harness no longer goes dark.** Its hook payloads carry no
+  `session_id`; the adapter synthesizes a stable per-`cwd` key so the event is not
+  dropped by the broker's empty-session_id guard.
+- **A denied Vibe tool no longer pins a false amber.** A tool the user denies never
+  fires `post_tool`, so the human-in-the-loop timer is now also cleared on
+  `post_agent` / `done` / `end`, not only on tool completion.
+- **VibeWatcher hygiene.** Session end is no longer derived from `meta.json`'s
+  `end_time` (Vibe stamps it on every save, so it never meant "ended"); only real
+  `session_*` dirs with a `session_id` count, so the `active/` lease dir and the
+  `.last_session` pointer no longer register as phantom segments; `cwd` is read from
+  the nested `environment.working_directory`; the session-log root is read from
+  `[session_logging] save_dir`; and a late watcher `start` never downgrades a live
+  session.
+
+### Added
+
+- **`nimbus-notify install-hooks --harness vibe` defaults to the current hook
+  names** and upgrades a stale file in place (it rewrites our `ns-*` blocks instead
+  of skipping on a sentinel). `--vibe-legacy` writes the pre-2.21 names plus
+  `enable_experimental_hooks` for Vibe < 2.21.
+- **`doctor` is version-aware.** It parses the hook `type` values, detects the
+  installed Vibe version, and says exactly what to run when the names don't match
+  (e.g. old names on Vibe >= 2.21, or new names on an older Vibe).
+- **Tier 2 session lease (Vibe >= 2.25).** When the `active/` lease dir is present,
+  the flock'd `active/<id>.lock` is used as the precise start/end signal: a session
+  registers before its first turn and clears the instant Vibe exits, with a stale
+  lock after a crash detected via the pid it holds. Older Vibe falls back to the
+  session-dir scan plus the idle-timeout reaper.
+- **`--pid $PPID` on the Vibe hook commands** as best-effort liveness (it expands to
+  the Vibe pid under the shell executor; it degrades to `pid=0` under the unified
+  harness, which runs commands without a shell).
+
 ## [1.6.0] — 2026-08-25
 
 Broker state-model hardening for unattended loops, plus a helper to pre-approve

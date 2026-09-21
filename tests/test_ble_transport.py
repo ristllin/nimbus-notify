@@ -35,14 +35,13 @@ class Harness:
     """Installs fake bleak objects; records every client the worker creates."""
 
     def __init__(self, monkeypatch, *, mtu=185, send_ack=True, device="scan",
-                 flap=False, probe_hang=False, adv_local_name=None):
+                 flap=False, probe_hang=False):
         self.clients    = []
         self.mtu        = mtu
         self.send_ack   = send_ack
         self.flap       = flap        # each session drops the instant it comes up
         self.probe_hang = probe_hang  # CONFIG read never answers (half-open link)
         self.device     = FakeDevice() if device == "scan" else device
-        self.adv_local_name = adv_local_name  # advertised name (may differ from GAP)
         harness = self
 
         class FakeClient:
@@ -98,7 +97,7 @@ class Harness:
 
         class _Adv:
             service_uuids = [ble.SERVICE_UUID]
-            local_name    = harness.adv_local_name
+            local_name = None   # name arrives via device.name (cached) by default
 
         monkeypatch.setattr(ble, "BleakClient", FakeClient)
         monkeypatch.setattr(ble, "BleakScanner", FakeScanner)
@@ -150,18 +149,6 @@ def test_connect_subscribes_and_sends(monkeypatch, transport_factory):
     #                                                   pairing on the encrypted
     #                                                   FRAME char (insufficient-
     #                                                   encryption ATT error)
-
-
-def test_name_filter_matches_advertised_local_name(monkeypatch, transport_factory):
-    # macOS reports a stale cached GAP name (device.name) that can differ from the
-    # LIVE advertised local_name — a board customized to "Lumi" still caches its
-    # base "Nimbus" GAP name. The name filter must match the advertised local_name,
-    # else the broker never selects the (renamed) device and stays disconnected.
-    dev = FakeDevice()
-    dev.name = "Nimbus"                         # cached GAP name (lags the adv)
-    h = Harness(monkeypatch, device=dev, adv_local_name="Lumi")
-    t = transport_factory(h, device_name="Lumi")
-    wait_until(lambda: t._connected.is_set(), msg="connect by advertised name")
 
 
 def test_is_encryption_error_classifies_pairing_failures():
@@ -435,3 +422,40 @@ def test_half_open_wedge_recycles_process_when_supervised(monkeypatch, transport
                           restart_hook=lambda: restarts.__setitem__("n", restarts["n"] + 1))
     wait_until(lambda: restarts["n"] == 1, msg="probe-dead wedge recycles process")
     assert len(h.clients) >= 3          # it really did retry several dead sessions
+
+
+def test_name_filter_accepts_advertised_or_cached_name(monkeypatch):
+    # CoreBluetooth quirk (the jarvis bug): device.name is the host's CACHED GAP
+    # name — empty for a board this host has never connected to — while the name
+    # the board actually advertises rides in adv.local_name. The --ble-name
+    # filter must accept either source, exact match, still gated on the service
+    # UUID, for EVERY combination a scan can deliver.
+    t = ble.BleTransport(device_name="jarvis", self_heal=False)
+    captured = {}
+
+    class FakeScanner:
+        @staticmethod
+        async def find_device_by_filter(filterfunc, timeout=0.0):
+            captured["match"] = filterfunc
+            return None
+
+    monkeypatch.setattr(ble, "BleakScanner", FakeScanner)
+    asyncio.run(t._find_device())
+    match = captured["match"]
+
+    def dev(cached):
+        return type("Dev", (), {"name": cached})()
+
+    def adv(local, svc=True):
+        return type("Adv", (), {
+            "service_uuids": [ble.SERVICE_UUID] if svc else [],
+            "local_name": local})()
+
+    assert match(dev(None), adv("jarvis"))          # fresh board: advertised only
+    assert match(dev("jarvis"), adv(None))          # known board: cached only
+    assert match(dev("jarvis"), adv("jarvis"))      # both agree
+    assert not match(dev(None), adv(None))          # no name anywhere
+    assert not match(dev("Nimbus-2"), adv(None))    # wrong cached name
+    assert not match(dev(None), adv("Nimbus-2"))    # wrong advertised name
+    assert not match(dev(None), adv("jarvis", svc=False))  # right name, no service
+    t.close()
