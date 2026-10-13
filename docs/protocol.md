@@ -136,7 +136,9 @@ to existing wire States, so no device change is required):
 Because a hard-killed session never sends its clean `end`, the broker also evicts
 by idle time: benign states (Idle / Running / Done) age out after `SESSION_TTL_S`,
 call-to-action states (WaitingInput / AwaitingApproval / Error) hold the longer
-`CTA_TTL_S` so a job blocked on a human can't vanish, and a session whose reported
+`CTA_TTL_S` so a job blocked on a human can't vanish, a Running session whose
+reported `pid` was seen alive holds `RUNNING_LIVE_TTL_S` (600 s, never less than
+the benign window) so a single long tool call isn't reaped mid-turn, and a session whose reported
 `pid` was once seen alive and is now gone is evicted on the next sweep. A dead
 session therefore cannot pin a segment for longer than one CTA hold. A wake-up loop
 shows at most a benign `Done` ember between fires (the settled green, not a lit

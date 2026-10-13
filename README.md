@@ -278,6 +278,9 @@ nimbus-notify-broker --ttl 120   # default: drop a silent benign session after 1
 - `--ttl SECONDS` sets the window for **benign** states (idle / running / done).
   Lower it for a snappier ring; raise it to keep quiet-but-alive sessions on the
   ring longer. Floored at 5 s.
+- A **running** session whose reported `pid` is alive holds **600 s** (or `--ttl`,
+  if longer): hooks only fire around a tool call, so a long build or `sleep` is
+  silent for its whole run and must not drop off the ring mid-turn.
 - **Call-to-action** states (awaiting approval / awaiting input / error) always
   hold **300 s** (matching the device's 5-minute attention hold) regardless of
   `--ttl`, so a job that's blocked *on you* can't quietly disappear from the ring

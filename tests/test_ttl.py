@@ -8,7 +8,12 @@ broker gained a ``--ttl`` flag so it can be tuned.
 import notify.broker.session as session_mod
 from notify.broker.segments import SegmentAllocator
 from notify.broker.server import MIN_TTL_S, TTL_CHECK_S, Broker
-from notify.broker.session import CTA_TTL_S, SESSION_TTL_S, SessionRecord
+from notify.broker.session import (
+    CTA_TTL_S,
+    RUNNING_LIVE_TTL_S,
+    SESSION_TTL_S,
+    SessionRecord,
+)
 from notify.state import State
 
 
@@ -142,3 +147,40 @@ def test_broker_floors_tiny_ttl():
     b = Broker(_NullTransport(), ttl=0.0)
     assert b._ttl == MIN_TTL_S
     assert b._ttl_check == MIN_TTL_S
+
+
+def test_running_with_live_pid_survives_long_tool_call(monkeypatch):
+    # A Running session inside one long tool call sends no hooks; with a pid seen
+    # alive it gets the long window instead of being reaped mid-turn.
+    alloc = SegmentAllocator(max_segs=4)
+    live = _rec("live")
+    live.pid, live.pid_alive_seen = 4242, True
+    nopid = _rec("nopid")
+    alloc.register(live)
+    alloc.register(nopid)
+    monkeypatch.setattr(session_mod.time, "monotonic",
+                        lambda: live.last_event + 240.0)
+    assert alloc.evict_stale(ttl=60.0, cta_ttl=300.0) == ["nopid"]
+    monkeypatch.setattr(session_mod.time, "monotonic",
+                        lambda: live.last_event + RUNNING_LIVE_TTL_S + 1)
+    assert alloc.evict_stale(ttl=60.0, cta_ttl=300.0) == ["live"]
+
+
+def test_live_pid_does_not_extend_resting_session(monkeypatch):
+    alloc = SegmentAllocator(max_segs=4)
+    done = _rec("done", State.Done)
+    done.pid, done.pid_alive_seen = 4242, True
+    alloc.register(done)
+    monkeypatch.setattr(session_mod.time, "monotonic",
+                        lambda: done.last_event + 61.0)
+    assert alloc.evict_stale(ttl=60.0, cta_ttl=300.0) == ["done"]
+
+
+def test_running_live_window_never_shorter_than_benign(monkeypatch):
+    alloc = SegmentAllocator(max_segs=4)
+    r = _rec("s0")
+    r.pid, r.pid_alive_seen = 4242, True
+    alloc.register(r)
+    monkeypatch.setattr(session_mod.time, "monotonic",
+                        lambda: r.last_event + RUNNING_LIVE_TTL_S + 1)
+    assert alloc.evict_stale(ttl=1200.0, cta_ttl=1200.0) == []
