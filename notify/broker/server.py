@@ -24,6 +24,7 @@ from notify.broker.session import (
     ACTIVITY_VERBS,
     CTA_STATES,
     CTA_TTL_S,
+    RESTING_STATES,
     HEARTBEAT_VERB,
     SESSION_TTL_S,
     WAKEUP_VERBS,
@@ -211,12 +212,15 @@ class Broker:
 
     def _handle_heartbeat(self, session_id: str, pid: int) -> None:
         """Touch an existing session's last_event (and refresh pid liveness) so it
-        survives the idle reaper. Never creates, never changes state."""
+        survives the idle reaper. Never creates, never changes state. A resting
+        (Idle/Done) session is not touched: a heartbeat protects a turn in flight
+        or a pending call-to-action, not a session that is merely still open."""
         with self._lock:
             rec = self._allocator._sessions.get(session_id)
             if rec is None:
                 return
-            rec.touch()
+            if rec.state not in RESTING_STATES:
+                rec.touch()
             _probe_pid(rec, pid)
 
     # ------------------------------------------------------------------

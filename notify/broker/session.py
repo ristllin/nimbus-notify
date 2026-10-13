@@ -52,6 +52,15 @@ CTA_STATES: frozenset = frozenset({
     State.Error,
 })
 
+# Resting states: no turn in flight and nothing waiting on the human. A heartbeat
+# never extends these (an open-but-idle session ages out on the benign TTL and
+# comes back on its next hook), so "the harness is still open" alone can't pin a
+# segment indefinitely.
+RESTING_STATES: frozenset = frozenset({
+    State.Idle,
+    State.Done,
+})
+
 # Wake-up window vocabulary (CUM-14). A session that arms a scheduled wake-up
 # (Claude Code ScheduleWakeup / Cron*) hands off to a TIMER, not a human: the turn
 # is effectively done and the next one fires later on its own. Reporting a `wakeup`

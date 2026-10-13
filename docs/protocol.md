@@ -109,7 +109,9 @@ to existing wire States, so no device change is required):
   only: it never changes state, never creates a session, and never relights a
   retired or call-to-action segment. A long-running turn (or a supervisor) can send
   it to keep a genuinely-alive session off the idle reaper without disturbing what
-  the ring shows.
+  the ring shows. It only extends a session that is mid-turn (Running) or waiting
+  on the human (WaitingInput / AwaitingApproval / Error); a resting Idle or Done
+  session still ages out on the benign TTL.
 
 - **`wakeup`: resolve a Stop-less wake-up window.** When a session arms a scheduled
   wake-up (Claude Code `ScheduleWakeup` / `CronCreate`, reported via a `PostToolUse`
@@ -141,12 +143,15 @@ shows at most a benign `Done` ember between fires (the settled green, not a lit
 "working" arc), and that ember ages out on the short benign TTL once the idle
 notifications stop.
 
-Exception: a Vibe >= 2.25 session holding a live lease (`active/<id>.lock`) is
-heartbeated by the watcher every sweep, so it is cleared by lease release,
-dead-pid eviction (holder pid read from `active/<id>.lock.json`, else the lock
-body), or, for a lock that names no pid, 30 s after it was created, rather than the
-idle TTL. Concurrent unified Vibe sessions in the
-same cwd share one segment, which ends only when the last lease is released.
+A Vibe >= 2.25 session holding a live lease (`active/<id>.lock`) is heartbeated
+by the watcher every sweep, so while a turn is in flight or waiting on you it is
+cleared by lease release or dead-pid eviction (holder pid read from
+`active/<id>.lock.json`, else the lock body) rather than the idle TTL. Once it is
+Idle or Done it ages out on the benign TTL like any other session, even though the
+Vibe app still holds it open, and returns on its next hook. A lock that names no
+pid counts as live only for 30 s after it was created. Concurrent unified Vibe
+sessions in the same cwd share one segment, which ends only when the last lease is
+released.
 
 ## Transports
 

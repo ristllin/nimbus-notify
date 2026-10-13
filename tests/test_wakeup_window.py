@@ -122,6 +122,30 @@ def test_heartbeat_keeps_session_off_the_reaper(monkeypatch):
     assert "s1" in b._allocator._sessions  # heartbeat kept it alive
 
 
+def test_heartbeat_does_not_keep_resting_session_alive(monkeypatch):
+    # An open-but-idle session (e.g. a Vibe lease heartbeated every watcher sweep)
+    # must still age out on the benign TTL; only a turn in flight is protected.
+    import notify.broker.session as session_mod
+    for verb, state in (("start", State.Idle), ("done", State.Done)):
+        b, _ = _mk()
+        b.handle_event(_ev("s1", verb))
+        rec = b._allocator._sessions["s1"]
+        assert rec.state == state
+        base = rec.last_event
+        monkeypatch.setattr(session_mod.time, "monotonic", lambda: base + 119.0)
+        b.handle_event(_ev("s1", "heartbeat"))
+        monkeypatch.setattr(session_mod.time, "monotonic", lambda: base + 129.0)
+        b._sweep_once()
+        assert "s1" not in b._allocator._sessions, state
+
+
+def test_heartbeat_still_refreshes_pid_on_resting_session():
+    b, _ = _mk()
+    b.handle_event(_ev("s1", "start"))
+    b.handle_event(_ev("s1", "heartbeat", pid=os.getpid()))
+    assert b._allocator._sessions["s1"].pid == os.getpid()
+
+
 # --------------------------------------------------------------------------
 # 3. Stop-less wake-up window resolves to Done / expired
 # --------------------------------------------------------------------------

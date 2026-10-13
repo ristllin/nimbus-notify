@@ -208,8 +208,9 @@ uses the session lease (`<save_dir>/active/<id>.lock`) for a precise session
 start and end.
 Unified-harness sessions resolve their cwd from
 `<save_dir>/unified/<id>/meta.json` and share one segment per working directory
-with their hook events; while a session holds its lease the watcher heartbeats it,
-so it clears when the lease is released (or its process dies), not on the idle TTL.
+with their hook events. While a session holds its lease the watcher heartbeats it,
+so a turn in flight is never reaped mid-thought; once the session is Idle or Done
+it ages out on the idle TTL like any other and returns on its next hook.
 
 The simplest way to wire the hooks is the installer (idempotent; it also
 upgrades a stale file in place):
@@ -293,7 +294,7 @@ For **unattended loops**, two more signals keep a segment from getting pinned
 - **`heartbeat`**: a liveness ping (`led-report claude heartbeat --pid $PPID`) that
   refreshes a session's idle timer without changing what the ring shows. A long
   supervised turn can send it to stay off the reaper; it never relights a finished
-  or pending segment.
+  or pending segment, and it does not extend a resting Idle or Done session.
 
 See [docs/protocol.md](docs/protocol.md#host-event-protocol-led-report---broker)
 for the full host event vocabulary.
