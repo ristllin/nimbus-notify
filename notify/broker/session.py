@@ -39,6 +39,14 @@ from notify.state import State
 #     to over-show a pending job than to hide a live one). Never shorter than
 #     the benign window (the broker clamps: max(benign_ttl, CTA_TTL_S)).
 SESSION_TTL_S = 120.0
+# RUNNING_LIVE_TTL_S (600 s) - a Running session whose harness pid is confirmed
+#   alive. Hooks fire only around a tool call, so a session inside one long call
+#   (a build, a `sleep`) is silent for its whole duration; the benign window used
+#   to reap it mid-turn. 600 s covers Claude Code's longest foreground tool call
+#   (10 min), and a killed harness is still cleared at once by dead-pid eviction.
+#   Bounded rather than infinite so a turn interrupted without a Stop hook can't
+#   pin a green segment forever. Never shorter than the benign window.
+RUNNING_LIVE_TTL_S = 600.0
 CTA_TTL_S     = 300.0   # was 900; owner red-ring round 2026-07-13 — matches the
                         # device's 5-min attention hold, and dead-PID eviction now
                         # clears killed sessions far sooner anyway

@@ -196,8 +196,9 @@ class Broker:
                     self._allocator.update(rec)
                     stored = self._allocator._sessions[session_id]
                     stored.awaiting_wakeup = wakeup_flag   # update() doesn't copy it
-                    if rec.pid:   # refresh liveness identity on every event
-                        stored.pid = rec.pid
+                    # refresh liveness identity on every event (latches
+                    # pid_alive_seen for a session first registered pid-less)
+                    _probe_pid(stored, rec.pid)
                 elif verb == "hitl_inferred":
                     # An INFERENCE must never CREATE a session. A vibe session
                     # killed mid-tool leaves a pending timer that would otherwise

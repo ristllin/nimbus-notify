@@ -13,7 +13,13 @@ Rules:
 """
 from __future__ import annotations
 
-from notify.broker.session import CTA_STATES, CTA_TTL_S, SESSION_TTL_S, SessionRecord
+from notify.broker.session import (
+    CTA_STATES,
+    CTA_TTL_S,
+    RUNNING_LIVE_TTL_S,
+    SESSION_TTL_S,
+    SessionRecord,
+)
 from notify.state import State, STATE_PRIORITY
 
 MAX_SEGS = 16
@@ -82,11 +88,18 @@ class SegmentAllocator:
         to the module constants; the broker passes its own (possibly
         ``--ttl``-overridden) values. Catches sessions killed without a clean
         ``end`` — the common killed case (Idle/Running) clears at ``ttl``.
+        A Running session whose pid was seen alive gets the longer
+        :data:`~notify.broker.session.RUNNING_LIVE_TTL_S` window (it is mid tool
+        call; the broker's dead-pid sweep, which runs first, catches a kill).
         """
-        stale = [
-            sid for sid, rec in self._sessions.items()
-            if rec.is_stale(cta_ttl if rec.state in CTA_STATES else ttl)
-        ]
+        def window(rec: SessionRecord) -> float:
+            if rec.state in CTA_STATES:
+                return cta_ttl
+            if rec.state == State.Running and rec.pid_alive_seen:
+                return max(ttl, RUNNING_LIVE_TTL_S)
+            return ttl
+
+        stale = [sid for sid, rec in self._sessions.items() if rec.is_stale(window(rec))]
         for sid in stale:
             self.free(sid)
         return stale
