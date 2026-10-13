@@ -53,9 +53,10 @@ CTA_STATES: frozenset = frozenset({
 })
 
 # Resting states: no turn in flight and nothing waiting on the human. A heartbeat
-# never extends these (an open-but-idle session ages out on the benign TTL and
+# does not extend these (an open-but-idle session ages out on the benign TTL and
 # comes back on its next hook), so "the harness is still open" alone can't pin a
-# segment indefinitely.
+# segment indefinitely. Exception: a Done record with a wake-up armed
+# (awaiting_wakeup) is still extended, see broker.server._handle_heartbeat.
 RESTING_STATES: frozenset = frozenset({
     State.Idle,
     State.Done,
@@ -73,8 +74,8 @@ WAKEUP_VERBS: frozenset = frozenset({"wakeup"})
 
 # A per-session liveness ping. Refreshes the session's last_event WITHOUT changing
 # its state, so a long-running turn (or a supervisor) can prove a session is alive
-# and keep it off the idle reaper, and it can NEVER relight a Done/CTA segment or
-# resurrect an ended one. Handled specially in broker.server (never mapped to a
+# and keep it off the idle reaper (not a resting Idle/Done one, see RESTING_STATES),
+# and it can NEVER relight a Done/CTA segment or resurrect an ended one. Handled specially in broker.server (never mapped to a
 # State, never creates a session).
 HEARTBEAT_VERB = "heartbeat"
 

@@ -36,9 +36,11 @@ Two surfaces:
         from ``unified/<id>/meta.json``), so the lease and the hook events collapse
         to ONE segment instead of a phantom duplicate; a legacy session keeps its
         raw session_id.  Each live lease is also HEARTBEATed every sweep so a
-        quiet turn (model thinking / an approval pending, i.e. no hooks firing) is
-        not idle-TTL-evicted mid-turn; the broker ignores the heartbeat once the
-        session is resting (Idle/Done), so an open-but-idle session still ages out.
+        quiet stretch after a tool starts (model thinking / an approval pending,
+        i.e. no hooks firing) is not idle-TTL-evicted; the broker ignores the
+        heartbeat once the session is resting (Idle/Done), which includes a new
+        turn before its first pre_tool (Vibe has no prompt hook), so an
+        open-but-idle session still ages out.
 
 Known limitations:
   - HITL (ask_user_question / an approval prompt): not exposed by any hook.  The
@@ -190,7 +192,8 @@ class VibeWatcher:
     holder pid in ``<id>.lock.json`` or the lock body; a pid-less lock is live only
     within a short grace).
     A unified-harness lease is reconciled under the same vibe-cwd-<hash> key its
-    hooks use, and every live lease is heartbeated so an idle turn isn't evicted.
+    hooks use, and every live lease is heartbeated so a Running or pending session
+    isn't evicted mid-turn (resting Idle/Done sessions still age out).
 
     Call start() from the broker setup; the watcher runs in a daemon thread.
     """

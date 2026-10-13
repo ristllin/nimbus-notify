@@ -15,7 +15,8 @@ Usage:
                 handed off to a timer; the broker resolves the window to Done so a
                 Stop-less wake-up can't pin a lit segment (see docs/protocol.md).
   `heartbeat`: refresh this session's idle timer only (no state change); keeps a
-                long-running-but-alive turn off the idle reaper.
+                long-running-but-alive turn off the idle reaper. Ignored while
+                the session is Idle, or Done with no wake-up armed.
   led-report codex-notify '<json>'   # Codex notify-program mode: json in argv
   led-report vibe    (pre_tool|post_tool|post_agent)   # Vibe v2.21.0+ names; the
                      # pre-2.21 names (before_tool|after_tool|post_agent_turn) are

@@ -248,3 +248,22 @@ def test_resolve_wakeup_table():
     assert _resolve_wakeup("error", State.Error, True) == (State.Error, False)
     assert _resolve_wakeup("notify:permission_prompt", State.AwaitingApproval, True) \
         == (State.AwaitingApproval, False)
+
+
+def test_heartbeat_keeps_done_wakeup_window_alive(monkeypatch):
+    # A supervisor heartbeating through a wake-up window must keep the Done record
+    # (and its awaiting_wakeup flag), or the next idle prompt becomes a false CTA.
+    import notify.broker.session as session_mod
+    b, _ = _mk()
+    b.handle_event(_ev("s1", "running"))
+    b.handle_event(_ev("s1", "wakeup"))
+    rec = b._allocator._sessions["s1"]
+    assert rec.state == State.Done and rec.awaiting_wakeup
+    base = rec.last_event
+    monkeypatch.setattr(session_mod.time, "monotonic", lambda: base + 119.0)
+    b.handle_event(_ev("s1", "heartbeat"))
+    monkeypatch.setattr(session_mod.time, "monotonic", lambda: base + 129.0)
+    b._sweep_once()
+    assert "s1" in b._allocator._sessions
+    b.handle_event(_ev("s1", "notify", ntype="idle_prompt"))
+    assert _state(b, "s1") not in CTA_STATES
