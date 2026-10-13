@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.7.2] (2026-10-13)
+
+**Upgrading: restart the broker after installing** (`launchctl kickstart -k`
+the broker service, or rerun it) so the new heartbeat rule is loaded.
+
+Bundles PR #8. No public-surface change.
+
+### Fixed
+
+- **Open-but-idle sessions no longer linger on the ring.** A harness that stays
+  open between turns (the Vibe app holds its session lease for days) was
+  heartbeated every sweep, so its Idle/Done segment never aged out. A heartbeat
+  now only extends a session that is Running, waiting on the human
+  (WaitingInput / AwaitingApproval / Error), or in a Done wake-up window; a
+  resting Idle or Done session ages out on the benign idle TTL (120 s by
+  default, tunable with the broker's `--ttl`) and returns on its next hook.
+  Heartbeats still refresh pid liveness on every session.
+
+### Known limits
+
+- Vibe has no prompt-submitted hook, so a new Vibe turn's thinking before its
+  first tool call is still Idle/Done and can age out if it outlasts the TTL.
+- Same-cwd Vibe unified sessions share a segment: one session's `post_agent`
+  lets the shared segment age out while another is mid-tool, until its next hook.
+
 ## [1.7.1] (2026-10-13)
 
 **Upgrading: restart the broker after installing** (`launchctl kickstart -k`
