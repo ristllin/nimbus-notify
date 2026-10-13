@@ -73,6 +73,8 @@ _UNIFIED_DIR_NAME   = "unified"    # 2.25+ unified-harness sessions: unified/<uu
                                    # (UUID-named, NOT session_*, so Tier 1 never sees them)
 _LEASE_DIR_NAME     = "active"     # 2.25+ session-lease dir (holds <id>.lock + .registry)
 _LEASE_SUFFIX       = ".lock"
+_LEASE_META_SUFFIX  = ".json"      # newer Vibe: empty <id>.lock + pid in <id>.lock.json
+_LEASE_PID_GRACE_S  = 30.0         # a pid-less lease this young may still be mid-write
 
 
 # ---------------------------------------------------------------------------
@@ -398,16 +400,37 @@ class VibeWatcher:
             pid = self._lease_pid(f)
             if pid and not _pid_alive(pid):
                 continue   # stale lock after a crash -> not live
+            if not pid and not self._lease_is_fresh(f):
+                # No pid in either the lock or its sidecar: a leftover lock we can
+                # never prove alive.  Counting it live heartbeated it forever (the
+                # broker's TTL and dead-pid reaper could never clear it); only a
+                # just-acquired lease whose sidecar may not be written yet gets a
+                # short grace.
+                continue
             out[sid] = pid
         return out
 
     @staticmethod
     def _lease_pid(path: Path) -> int:
+        """The lease holder's pid: from the ``<id>.lock.json`` sidecar (newer Vibe
+        leaves the ``.lock`` itself empty), else from the ``.lock`` body (older
+        Vibe).  0 when neither names one."""
+        for src in (path.with_name(path.name + _LEASE_META_SUFFIX), path):
+            try:
+                data = json.loads(src.read_text())
+                pid = int(data.get("process_id") or 0)
+            except (OSError, json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                continue
+            if pid:
+                return pid
+        return 0
+
+    @staticmethod
+    def _lease_is_fresh(path: Path) -> bool:
         try:
-            data = json.loads(path.read_text())
-            return int(data.get("process_id") or 0)
-        except (OSError, json.JSONDecodeError, ValueError, TypeError):
-            return 0
+            return time.time() - path.stat().st_mtime < _LEASE_PID_GRACE_S
+        except OSError:
+            return False
 
     def _read_unified_meta(self, sid: str) -> dict:
         """meta.json for a unified-harness session at ``unified/<sid>/meta.json``
