@@ -184,3 +184,15 @@ def test_running_live_window_never_shorter_than_benign(monkeypatch):
     monkeypatch.setattr(session_mod.time, "monotonic",
                         lambda: r.last_event + RUNNING_LIVE_TTL_S + 1)
     assert alloc.evict_stale(ttl=1200.0, cta_ttl=1200.0) == []
+
+
+def test_pid_from_later_hook_latches_liveness():
+    # A session registered pid-less (e.g. a watcher 'start') must gain the live-pid
+    # window once a later hook reports a live pid.
+    import os
+    b = Broker(_NullTransport())
+    b.handle_event({"session_id": "s1", "harness": "claude", "cwd": "/x", "verb": "start"})
+    b.handle_event({"session_id": "s1", "harness": "claude", "cwd": "/x",
+                    "verb": "running", "pid": os.getpid()})
+    rec = b._allocator._sessions["s1"]
+    assert rec.pid == os.getpid() and rec.pid_alive_seen
