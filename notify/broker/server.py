@@ -25,6 +25,7 @@ from notify.broker.session import (
     CTA_STATES,
     CTA_TTL_S,
     HEARTBEAT_VERB,
+    RESTING_STATES,
     SESSION_TTL_S,
     WAKEUP_VERBS,
     SessionRecord,
@@ -145,7 +146,8 @@ class Broker:
         # Per-session heartbeat (CUM-14): refresh liveness ONLY. Never changes
         # state, never creates a session, never relights a retired/CTA one, so a
         # long-running turn (or a supervisor) can keep a genuinely-alive session
-        # off the idle reaper without disturbing what the ring shows. Nothing
+        # off the idle reaper without disturbing what the ring shows. A resting
+        # session (Idle, or Done with no wake-up armed) is not extended. Nothing
         # visual changed, so no frame push.
         if verb == HEARTBEAT_VERB:
             self._handle_heartbeat(session_id, int(msg.get("pid") or 0))
@@ -211,12 +213,19 @@ class Broker:
 
     def _handle_heartbeat(self, session_id: str, pid: int) -> None:
         """Touch an existing session's last_event (and refresh pid liveness) so it
-        survives the idle reaper. Never creates, never changes state."""
+        survives the idle reaper. Never creates, never changes state. A resting
+        session (Idle, or Done with no wake-up armed) is not touched: a heartbeat
+        protects a turn in flight, a pending call-to-action or an armed wake-up
+        window, not a session that is merely still open."""
         with self._lock:
             rec = self._allocator._sessions.get(session_id)
             if rec is None:
                 return
-            rec.touch()
+            # A Done wake-up window keeps its awaiting_wakeup flag only while the
+            # record lives; letting it lapse would turn the next idle prompt into
+            # a false WaitingInput CTA.
+            if rec.state not in RESTING_STATES or rec.awaiting_wakeup:
+                rec.touch()
             _probe_pid(rec, pid)
 
     # ------------------------------------------------------------------
