@@ -28,7 +28,9 @@ Two surfaces:
         lease dir): the flock'd lease ``active/<session_id>.lock`` is the precise
         start/end signal: present = live (acquired at session open, before the
         first turn), gone = ended, a stale lock after a crash detectable via the
-        pid it holds.  This gives an early start and a real end without $PPID.
+        holder pid (read from the ``<id>.lock.json`` sidecar on newer Vibe, else
+        the ``.lock`` body); a lock that names no pid anywhere counts as live only
+        for a short grace after it is created.  This gives an early start and a real end without $PPID.
         For a UNIFIED-harness session (2.25+, whose hooks carry no session_id) the
         lease is keyed by the SAME vibe-cwd-<hash> its hooks synthesize (cwd read
         from ``unified/<id>/meta.json``), so the lease and the hook events collapse
@@ -73,6 +75,9 @@ _UNIFIED_DIR_NAME   = "unified"    # 2.25+ unified-harness sessions: unified/<uu
                                    # (UUID-named, NOT session_*, so Tier 1 never sees them)
 _LEASE_DIR_NAME     = "active"     # 2.25+ session-lease dir (holds <id>.lock + .registry)
 _LEASE_SUFFIX       = ".lock"
+_LEASE_META_SUFFIX  = ".json"      # newer Vibe: empty <id>.lock + pid in <id>.lock.json
+_LEASE_PID_GRACE_S  = 30.0         # a pid-less lease this young may still be mid-write
+_PID_MAX            = 2**31 - 1    # pid_t range; larger overflows os.kill
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +185,9 @@ class VibeWatcher:
     Tier 1 (all versions): fires register-if-absent ``start`` for each real
     session dir; never derives "end" from meta.json.end_time.
     Tier 2 (Vibe >= 2.25): the ``active/<id>.lock`` session lease is the precise
-    start/end signal (present = live, gone = ended, stale-after-crash via pid).
+    start/end signal (present = live, gone = ended, stale-after-crash via the
+    holder pid in ``<id>.lock.json`` or the lock body; a pid-less lock is live only
+    within a short grace).
     A unified-harness lease is reconciled under the same vibe-cwd-<hash> key its
     hooks use, and every live lease is heartbeated so an idle turn isn't evicted.
 
@@ -206,6 +213,9 @@ class VibeWatcher:
         # mid-rewrite (cwd briefly unreadable) keeps its key instead of flapping
         # the segment end -> start (which would reset it to Idle).
         self._lease_key_by_sid: dict[str, tuple[str, str]] = {}
+        # raw lease sid -> last pid read for it, so a live lease whose sidecar is
+        # briefly unreadable keeps its holder instead of dropping (end -> start).
+        self._lease_pid_by_sid: dict[str, int] = {}
         self._primed  = False
         self._thread: threading.Thread | None = None
         self._stop    = threading.Event()
@@ -384,7 +394,9 @@ class VibeWatcher:
         """Map session_id -> process_id for every CURRENTLY-live lease.
 
         A lease file whose pid is dead is a stale lock left by a crashed Vibe:
-        it is NOT live (excluded here), so a crash is treated as an end."""
+        it is NOT live (excluded here), so a crash is treated as an end.  A lease
+        with no pid in either the lock or its sidecar (and none remembered from an
+        earlier sweep) is live only within ``_LEASE_PID_GRACE_S`` of its mtime."""
         out: dict[str, int] = {}
         lease_dir = self._lease_dir()
         try:
@@ -395,19 +407,36 @@ class VibeWatcher:
             if not f.name.endswith(_LEASE_SUFFIX):
                 continue   # skips the .registry directory-lock file
             sid = f.name[: -len(_LEASE_SUFFIX)]
-            pid = self._lease_pid(f)
-            if pid and not _pid_alive(pid):
-                continue   # stale lock after a crash -> not live
+            pid = self._lease_pid(f) or self._lease_pid_by_sid.get(sid, 0)
+            live = _pid_alive(pid) if pid else self._lease_is_fresh(f)
+            if not live:
+                continue   # dead holder, or a pid-less lock past its write grace
             out[sid] = pid
+        self._lease_pid_by_sid = {sid: pid for sid, pid in out.items() if pid}
         return out
 
     @staticmethod
     def _lease_pid(path: Path) -> int:
+        """The lease holder's pid: from the ``<id>.lock.json`` sidecar (newer Vibe
+        leaves the ``.lock`` itself empty), else from the ``.lock`` body (older
+        Vibe).  0 when neither names one."""
+        for src in (path.with_name(path.name + _LEASE_META_SUFFIX), path):
+            try:
+                data = json.loads(src.read_text())
+            except (OSError, ValueError):
+                continue
+            pid = data.get("process_id") if isinstance(data, dict) else None
+            # bool is an int subclass: `true` must not become pid 1 (always alive)
+            if type(pid) is int and 0 < pid <= _PID_MAX:
+                return pid
+        return 0
+
+    @staticmethod
+    def _lease_is_fresh(path: Path) -> bool:
         try:
-            data = json.loads(path.read_text())
-            return int(data.get("process_id") or 0)
-        except (OSError, json.JSONDecodeError, ValueError, TypeError):
-            return 0
+            return time.time() - path.stat().st_mtime < _LEASE_PID_GRACE_S
+        except OSError:
+            return False
 
     def _read_unified_meta(self, sid: str) -> dict:
         """meta.json for a unified-harness session at ``unified/<sid>/meta.json``
@@ -534,5 +563,5 @@ def _pid_alive(pid: int) -> bool:
         return True
     except PermissionError:
         return True   # alive, not ours
-    except (ProcessLookupError, OSError):
+    except (ProcessLookupError, OSError, OverflowError):
         return False

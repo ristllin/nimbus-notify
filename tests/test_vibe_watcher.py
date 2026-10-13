@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import time
 from pathlib import Path
 
 import notify.harness.vibe as vibe
@@ -190,6 +191,84 @@ def test_stale_lease_after_live_fires_end(tmp_path):
                                 "process_id": 999999, "acquired_at": "x"}))
     w._scan_leases()                         # dead pid -> end
     assert [e["verb"] for e in events] == ["start", "end"]
+
+
+def _mk_sidecar_lease(root, session_id, pid):
+    """Newer Vibe lease shape: an EMPTY <id>.lock (the flock target) and the
+    holder's pid in a <id>.lock.json sidecar."""
+    active = root / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    lock = active / f"{session_id}.lock"
+    lock.write_bytes(b"")
+    (active / f"{session_id}.lock.json").write_text(json.dumps(
+        {"lease_version": 1, "session_id": session_id, "process_id": pid,
+         "acquired_at": "2026-10-09T13:51:00.000Z"}))
+    return lock
+
+
+def _age(path, seconds):
+    t = time.time() - seconds
+    os.utime(path, (t, t))
+
+
+def test_sidecar_lease_live_pid_fires_start(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    _mk_session(tmp_path, "session_S", "side-1", "/proj")
+    _mk_sidecar_lease(tmp_path, "side-1", os.getpid())
+    w._scan_leases()
+    assert [(e["verb"], e["session_id"], e.get("pid")) for e in events] == [
+        ("start", "side-1", os.getpid())]
+
+
+def test_sidecar_lease_dead_pid_never_registers(tmp_path):
+    # The phantom-segment bug: an empty .lock read as pid 0 counted as live, so a
+    # crashed session's leftover lock was heartbeated forever and never evicted.
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    _age(_mk_sidecar_lease(tmp_path, "dead-side", 999999), 3600)
+    w._scan_leases()
+    assert events == []
+
+
+def test_sidecar_pid_dies_after_live_fires_end(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    lock = _mk_sidecar_lease(tmp_path, "s4", os.getpid())
+    w._scan_leases()                         # live -> start
+    _mk_sidecar_lease(tmp_path, "s4", 999999)
+    w._scan_leases()                         # sidecar pid dead -> end
+    assert [e["verb"] for e in events] == ["start", "end"]
+    assert lock.exists()
+
+
+def test_pidless_lease_old_is_not_live(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    active = tmp_path / "active"; active.mkdir()
+    lock = active / "orphan.lock"; lock.write_bytes(b"")   # no pid anywhere
+    _age(lock, 3600)
+    w._scan_leases()
+    assert events == []
+
+
+def test_pidless_lease_fresh_gets_grace(tmp_path):
+    # A just-acquired lock whose sidecar isn't written yet must not be dropped.
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    active = tmp_path / "active"; active.mkdir()
+    (active / "young.lock").write_bytes(b"")
+    w._scan_leases()
+    assert [e["session_id"] for e in events] == ["young"]
+
+
+def test_sidecar_file_is_not_a_lease(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    lock = _mk_sidecar_lease(tmp_path, "s5", os.getpid())
+    w._scan_leases()
+    assert [e["session_id"] for e in events] == ["s5"]   # no "s5.lock" phantom
+    assert lock.with_name("s5.lock.json").exists()
 
 
 def test_registry_file_is_not_a_lease(tmp_path):
@@ -418,3 +497,37 @@ def test_unified_cwd_change_ends_old_key_before_starting_new(tmp_path):
         ("end",   _synth_session_key("/a")),     # frees the slot first
         ("start", _synth_session_key("/b")),
     ]
+
+
+def test_sidecar_briefly_missing_keeps_live_lease(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    lock = _mk_sidecar_lease(tmp_path, "s6", os.getpid())
+    _age(lock, 3600)                         # established lease, past the grace
+    w._scan_leases()                         # start
+    lock.with_name("s6.lock.json").unlink()  # sidecar momentarily gone
+    w._scan_leases()                         # remembered pid -> heartbeat, no end
+    assert [e["verb"] for e in events] == ["start", "heartbeat"]
+
+
+def test_lease_pid_rejects_bool_and_out_of_range(tmp_path):
+    active = tmp_path / "active"; active.mkdir()
+    lock = active / "x.lock"; lock.write_bytes(b"")
+    side = active / "x.lock.json"
+    for bad in ("true", "1e400", "99999999999999999999", "-5", '"12"', "null", "[]"):
+        side.write_text(f'{{"process_id": {bad}}}')
+        assert VibeWatcher._lease_pid(lock) == 0, bad
+    side.write_text('{"process_id": 4242}')
+    assert VibeWatcher._lease_pid(lock) == 4242
+
+
+def test_huge_pid_does_not_abort_sweep(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    active = tmp_path / "active"; active.mkdir()
+    (active / "big.lock").write_text('{"process_id": 99999999999999999999}')
+    _age(active / "big.lock", 3600)
+    _mk_session(tmp_path, "session_ok", "ok-1", "/ok")
+    _mk_lease(tmp_path, "ok-1", os.getpid())
+    w._scan_leases()
+    assert [e["session_id"] for e in events] == ["ok-1"]
