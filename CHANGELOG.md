@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.7.1] (2026-10-13)
+
+**Upgrading: restart the broker after installing** (`launchctl kickstart -k`
+the broker service, or rerun it) so the new Vibe watcher is loaded.
+
+Vibe session-lease fixes. Bundles PR #6 (unified-session detection) and PR #7
+(sidecar lease pid). No public-surface change.
+
+### Fixed
+
+- **Phantom idle Vibe segments that never clear.** Newer Vibe leaves
+  `active/<id>.lock` empty and records the holder pid in `<id>.lock.json`. The
+  watcher only read the lock body, got no pid, and counted every leftover lock
+  from a closed or crashed session as live, heartbeating it forever so neither
+  the idle TTL nor the dead-pid reaper could evict it. The pid is now read from
+  the sidecar (then the lock body); a lock that names no pid is live only for
+  30 s after it is created. Lease pids must be real ints in `pid_t` range (JSON
+  `true` no longer reads as pid 1, a huge pid no longer aborts the sweep).
+- **Vibe 2.25 unified sessions are detected.** A unified session's lease now
+  resolves its cwd from `unified/<id>/meta.json` and is keyed by the same
+  `vibe-cwd-<hash>` its hooks synthesize, so lease and hook events share one
+  segment (no duplicate, no missing session). Same-cwd unified sessions share a
+  segment that ends when the last lease is released; a lease is deferred until
+  its meta names a cwd, and a meta caught mid-rewrite keeps its segment.
+- **Idle-but-open Vibe sessions are not evicted mid-turn.** Each live lease is
+  heartbeated every sweep, so it is cleared by lease release or dead-pid
+  eviction rather than the idle TTL (documented in `docs/protocol.md`).
+- **One unreadable `meta.json` no longer stalls the watcher.** Bad UTF-8 in a
+  session meta used to abort every sweep.
+
 ## [1.7.0] (2026-09-17)
 
 **Upgrading: restart the broker after installing.** A broker started under an
