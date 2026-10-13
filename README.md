@@ -206,6 +206,10 @@ infer human-in-the-loop waits (if a tool call starts but doesn't finish
 within a timeout, that's treated as "awaiting approval"). On Vibe v2.25+ it
 uses the session lease (`<save_dir>/active/<id>.lock`) for a precise session
 start and end.
+Unified-harness sessions resolve their cwd from
+`<save_dir>/unified/<id>/meta.json` and share one segment per working directory
+with their hook events; while a session holds its lease the watcher heartbeats it,
+so it clears when the lease is released (or its process dies), not on the idle TTL.
 
 The simplest way to wire the hooks is the installer (idempotent; it also
 upgrades a stale file in place):

@@ -141,6 +141,11 @@ shows at most a benign `Done` ember between fires (the settled green, not a lit
 "working" arc), and that ember ages out on the short benign TTL once the idle
 notifications stop.
 
+Exception: a Vibe >= 2.25 session holding a live lease (`active/<id>.lock`) is
+heartbeated by the watcher every sweep, so it is cleared by lease release or
+dead-pid eviction rather than the idle TTL. Concurrent unified Vibe sessions in the
+same cwd share one segment, which ends only when the last lease is released.
+
 ## Transports
 
 The broker ships two transports; a device only needs to implement one:

@@ -364,3 +364,57 @@ def test_after_tool_cancels_hitl(tmp_path, monkeypatch):
     w.record_after_tool("vibe-y")            # tool completed -> no HITL
     w._check_hitl_timeouts()
     assert events == []
+
+
+def test_unified_dir_without_meta_is_deferred_not_raw_uuid(tmp_path):
+    # The lock (and unified/<id>/ dir) can land before meta.json: defer it rather
+    # than registering a raw-uuid duplicate beside the hooks' vibe-cwd segment.
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    (tmp_path / "unified" / "child-1").mkdir(parents=True)
+    _mk_lease(tmp_path, "child-1", os.getpid())
+    w._scan_leases()
+    assert events == []
+    _mk_unified(tmp_path, "child-1", "/proj")
+    w._scan_leases()
+    assert [(e["verb"], e["session_id"]) for e in events] == [
+        ("start", _synth_session_key("/proj"))]
+
+
+def test_unified_meta_mid_rewrite_keeps_key_no_flap(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    d = _mk_unified(tmp_path, "uuid-rw", "/proj")
+    _mk_lease(tmp_path, "uuid-rw", os.getpid())
+    w._scan_leases()                         # start
+    (d / "meta.json").write_text("{")        # torn write: cwd briefly unreadable
+    w._scan_leases()                         # must heartbeat, NOT end + start
+    assert [e["verb"] for e in events] == ["start", "heartbeat"]
+    assert {e["session_id"] for e in events} == {_synth_session_key("/proj")}
+
+
+def test_unified_meta_bad_utf8_does_not_abort_sweep(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    d = tmp_path / "unified" / "uuid-bin"; d.mkdir(parents=True)
+    (d / "meta.json").write_bytes(b"\xff\xfe\x00garbage")
+    _mk_lease(tmp_path, "uuid-bin", os.getpid())
+    _mk_session(tmp_path, "session_ok", "legacy-ok", "/ok")
+    _mk_lease(tmp_path, "legacy-ok", os.getpid())
+    w._scan_leases()                         # no UnicodeDecodeError escapes
+    assert [e["session_id"] for e in events] == ["legacy-ok"]
+
+
+def test_unified_cwd_change_ends_old_key_before_starting_new(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    _mk_unified(tmp_path, "uuid-mv", "/a")
+    _mk_lease(tmp_path, "uuid-mv", os.getpid())
+    w._scan_leases()
+    _mk_unified(tmp_path, "uuid-mv", "/b")
+    w._scan_leases()
+    assert [(e["verb"], e["session_id"]) for e in events] == [
+        ("start", _synth_session_key("/a")),
+        ("end",   _synth_session_key("/a")),     # frees the slot first
+        ("start", _synth_session_key("/b")),
+    ]
