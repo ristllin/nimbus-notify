@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.7.3] (2026-10-13)
+
+**Upgrading: restart the broker after installing** (`launchctl kickstart -k`
+the broker service, or rerun it).
+
+Bundles PR #9. No public-surface change.
+
+### Fixed
+
+- **A session inside a long tool call no longer drops off the ring.** Hooks fire
+  only around a tool call, so a build or `sleep` is silent for its whole run and
+  the benign idle TTL reaped the Running session mid-turn. A Running session
+  whose reported pid was seen alive now holds 600 s (or `--ttl`, if longer); a
+  killed harness is still cleared on the next sweep by dead-pid eviction.
+- **Pid liveness latches on any hook.** A session first registered without a pid
+  now records the pid as alive when a later hook reports it, so dead-pid
+  eviction and the live-pid window apply to it.
+
 ## [1.7.2] (2026-10-13)
 
 **Upgrading: restart the broker after installing** (`launchctl kickstart -k`
