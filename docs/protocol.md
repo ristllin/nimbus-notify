@@ -142,8 +142,10 @@ shows at most a benign `Done` ember between fires (the settled green, not a lit
 notifications stop.
 
 Exception: a Vibe >= 2.25 session holding a live lease (`active/<id>.lock`) is
-heartbeated by the watcher every sweep, so it is cleared by lease release or
-dead-pid eviction rather than the idle TTL. Concurrent unified Vibe sessions in the
+heartbeated by the watcher every sweep, so it is cleared by lease release,
+dead-pid eviction (holder pid read from `active/<id>.lock.json`, else the lock
+body), or, for a lock that names no pid, 30 s after it was created, rather than the
+idle TTL. Concurrent unified Vibe sessions in the
 same cwd share one segment, which ends only when the last lease is released.
 
 ## Transports

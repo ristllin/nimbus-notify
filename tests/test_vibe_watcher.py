@@ -497,3 +497,37 @@ def test_unified_cwd_change_ends_old_key_before_starting_new(tmp_path):
         ("end",   _synth_session_key("/a")),     # frees the slot first
         ("start", _synth_session_key("/b")),
     ]
+
+
+def test_sidecar_briefly_missing_keeps_live_lease(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    lock = _mk_sidecar_lease(tmp_path, "s6", os.getpid())
+    _age(lock, 3600)                         # established lease, past the grace
+    w._scan_leases()                         # start
+    lock.with_name("s6.lock.json").unlink()  # sidecar momentarily gone
+    w._scan_leases()                         # remembered pid -> heartbeat, no end
+    assert [e["verb"] for e in events] == ["start", "heartbeat"]
+
+
+def test_lease_pid_rejects_bool_and_out_of_range(tmp_path):
+    active = tmp_path / "active"; active.mkdir()
+    lock = active / "x.lock"; lock.write_bytes(b"")
+    side = active / "x.lock.json"
+    for bad in ("true", "1e400", "99999999999999999999", "-5", '"12"', "null", "[]"):
+        side.write_text(f'{{"process_id": {bad}}}')
+        assert VibeWatcher._lease_pid(lock) == 0, bad
+    side.write_text('{"process_id": 4242}')
+    assert VibeWatcher._lease_pid(lock) == 4242
+
+
+def test_huge_pid_does_not_abort_sweep(tmp_path):
+    events: list[dict] = []
+    w = VibeWatcher(events.append, root=tmp_path)
+    active = tmp_path / "active"; active.mkdir()
+    (active / "big.lock").write_text('{"process_id": 99999999999999999999}')
+    _age(active / "big.lock", 3600)
+    _mk_session(tmp_path, "session_ok", "ok-1", "/ok")
+    _mk_lease(tmp_path, "ok-1", os.getpid())
+    w._scan_leases()
+    assert [e["session_id"] for e in events] == ["ok-1"]
